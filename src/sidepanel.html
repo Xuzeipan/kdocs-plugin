@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WPS Batch Side Panel</title>
+<link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Status Bar -->
+  <div id="status-bar">
+    <div class="status-row">
+      <span class="status-label">页面</span>
+      <span id="status-page" class="status-badge status-unknown">—</span>
+      <span class="status-label">Bridge</span>
+      <span id="status-bridge" class="status-badge status-unknown">—</span>
+      <span class="status-label">APP</span>
+      <span id="status-app" class="status-badge status-unknown">—</span>
+    </div>
+    <div id="status-sheet-row" class="status-hint hidden"></div>
+  </div>
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <button id="btn-check" class="btn">检查页面</button>
+    <button id="btn-scan" class="btn" disabled>扫描</button>
+    <button id="btn-rename-selected" class="btn btn-primary" disabled>批量重命名附件</button>
+  </div>
+
+  <!-- Loading -->
+  <div id="loading" class="hidden">
+    <span id="loading-text"></span>
+    <div class="spinner"></div>
+  </div>
+
+  <!-- Error -->
+  <div id="error-banner" class="hidden">
+    <span id="error-text"></span>
+    <button id="error-dismiss" class="btn-close">&times;</button>
+  </div>
+
+  <!-- Info -->
+  <div id="info-banner" class="hidden">
+    <span id="info-text"></span>
+    <button id="info-dismiss" class="btn-close">&times;</button>
+  </div>
+
+  <!-- Scan Section -->
+  <section id="scan-section" class="section hidden">
+    <div class="section-header">
+      <h3>扫描结果</h3>
+      <span id="scan-summary" class="summary"></span>
+    </div>
+
+    <!-- Column Tabs -->
+    <div id="col-tabs" class="col-tabs">
+      <button class="tab-arrow tab-arrow-left hidden" id="tab-arrow-left">&lsaquo;</button>
+      <div id="col-tabs-scroll" class="col-tabs-scroll"></div>
+      <button class="tab-arrow tab-arrow-right hidden" id="tab-arrow-right">&rsaquo;</button>
+    </div>
+
+    <!-- Column Data Table -->
+    <div id="col-data-section" class="hidden">
+      <div class="section-header sub">
+        <h4 id="col-data-title">列数据</h4>
+        <span id="col-data-count" class="summary"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="col-data-table">
+          <thead>
+            <tr>
+              <th class="col-row-num">行号</th>
+              <th class="col-value">值</th>
+            </tr>
+          </thead>
+          <tbody id="col-data-body"></tbody>
+        </table>
+      </div>
+      <div id="col-data-empty" class="empty-hint hidden">该列无数据</div>
+    </div>
+  </section>
+
+  <!-- Rename Section -->
+  <section id="rename-section" class="section hidden">
+    <div class="section-header">
+      <h3>命名规则</h3>
+    </div>
+
+    <div id="rename-status-bar" class="rename-status"></div>
+
+    <div class="rename-row">
+      <label class="field-label">手动指定范围 <span class="label-hint">（可选，自动选区失败时使用）</span></label>
+      <input type="text" id="input-range-override" class="field-input" placeholder="例如 F2:F20，可在自动读取选区失败时使用">
+    </div>
+
+    <div id="diagnose-wrap" class="diagnose-wrap hidden">
+      <button id="btn-diagnose-selection" class="btn btn-sm btn-diag">复制选区诊断报告</button>
+      <button id="btn-diagnose-attachment" class="btn btn-sm btn-diag">诊断当前附件单元格</button>
+      <div id="selection-diagnosis-wrap" class="diagnosis-report-wrap hidden">
+        <label class="field-label">诊断报告</label>
+        <textarea id="selection-diagnosis-text" class="diagnosis-textarea" readonly rows="8"></textarea>
+      </div>
+    </div>
+
+    <div class="rename-row">
+      <label class="field-label">选择列</label>
+      <div id="rule-column-list" class="rule-column-list">
+        <span class="placeholder-text">请先扫描，然后在此勾选列</span>
+      </div>
+    </div>
+
+    <div id="selected-chips-row" class="rename-row hidden">
+      <label class="field-label">已选择列顺序</label>
+      <div id="col-chips" class="col-chips"></div>
+    </div>
+
+    <div class="rename-row">
+      <label class="field-label">自定义规则修改</label>
+      <textarea id="input-template" class="field-textarea" rows="2" placeholder="例如：{箱数}箱-{货件号}"></textarea>
+      <div id="template-hint" class="field-hint"></div>
+    </div>
+
+    <div class="rename-row">
+      <label class="field-label">当前规则预览</label>
+      <code id="rule-preview-text" class="rule-preview">—</code>
+    </div>
+
+    <div class="rename-actions">
+      <button id="btn-preview-rename" class="btn" disabled>预览改名结果</button>
+      <button id="btn-reset-template" class="btn btn-sm hidden">按所选列重置规则</button>
+    </div>
+
+    <!-- Rename Preview -->
+    <div id="rename-preview-wrap" class="hidden">
+      <h4 class="subhead">改名预览</h4>
+      <div id="rename-preview-summary" class="summary-row"></div>
+      <div class="table-wrap">
+        <table id="rename-preview-table">
+          <thead>
+            <tr>
+              <th class="col-row-num">行</th>
+              <th class="col-src-name">原名</th>
+              <th class="col-new-name">新名</th>
+              <th class="col-status">状态</th>
+            </tr>
+          </thead>
+          <tbody id="rename-preview-body"></tbody>
+        </table>
+      </div>
+
+      <div id="rename-confirm-wrap" class="rename-confirm">
+        <button id="btn-confirm-rename" class="btn btn-primary" disabled>确认改名</button>
+        <span id="rename-confirm-hint" class="confirm-hint"></span>
+      </div>
+    </div>
+
+    <!-- Rename Result -->
+    <div id="rename-result" class="hidden">
+      <h4 class="subhead">改名结果</h4>
+      <div class="result-grid">
+        <div class="result-item result-ok">
+          <span class="result-count" id="rename-success-count">0</span>
+          <span class="result-label">成功</span>
+        </div>
+        <div class="result-item result-err">
+          <span class="result-count" id="rename-fail-count">0</span>
+          <span class="result-label">失败</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script src="sidepanel.js"></script>
+</body>
+</html>

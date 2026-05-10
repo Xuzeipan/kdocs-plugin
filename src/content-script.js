@@ -5,6 +5,9 @@
 (function () {
   'use strict';
 
+  if (window.__kdocsPluginContentScriptInstalled) return;
+  window.__kdocsPluginContentScriptInstalled = true;
+
   var BRIDGE_SCRIPTS = ['src/wps-batch-rename-download.js', 'src/page-bridge.js'];
   var bridgeReady = false;
   var pendingRequests = {};
