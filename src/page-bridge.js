@@ -87,6 +87,30 @@
           result = window.WPSBatch.report(options);
           break;
 
+        case 'getSelectedRange':
+          result = await window.WPSBatch.getSelectedRange(options);
+          break;
+
+        case 'inspectSelectedAttachmentCells':
+          result = await window.WPSBatch.inspectSelectedAttachmentCells(options);
+          break;
+
+        case 'previewRenameSelectedAttachments':
+          result = await window.WPSBatch.previewRenameSelectedAttachments(options);
+          break;
+
+        case 'renameSelectedAttachmentCells':
+          result = await window.WPSBatch.renameSelectedAttachmentCells(options);
+          break;
+
+        case 'diagnoseSelectionApis':
+          result = await window.WPSBatch.diagnoseSelectionApis(options);
+          break;
+
+        case 'diagnoseSelectedAttachmentCells':
+          result = await window.WPSBatch.diagnoseSelectedAttachmentCells(options);
+          break;
+
         default:
           throw new Error('未识别的命令: ' + action);
       }

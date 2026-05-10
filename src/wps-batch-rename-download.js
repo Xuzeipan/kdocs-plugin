@@ -2335,6 +2335,125 @@
     };
   }
 
+  // ===== Exact-cell link run extraction (no plan matching) =====
+
+  function extractAttachmentMetaFromExactCellLinkRuns(rawValue, cellText, source) {
+    if (!rawValue) return null;
+
+    // Collect all strings from the raw value (same traversal as scanLinkRunValueForAttachmentMeta)
+    var seen = new WeakSet();
+    var queue = [{ value: rawValue, depth: 0 }];
+    var strings = [];
+    var scanned = 0;
+
+    function addString(value) {
+      var text = String(value || "");
+      if (/(kw:annex|外箱标|预约信|fileName|fileSize|oId=|address|subFileId)/i.test(text)) strings.push(text);
+    }
+
+    function enqueue(value, depth) {
+      if (value == null || depth > 7) return;
+      var type = typeof value;
+      if (type === "string" || type === "number") { addString(value); return; }
+      if (type !== "object" && type !== "function") return;
+      if (value instanceof Node || value === window || value === document) return;
+      if (seen.has(value)) return;
+      seen.add(value);
+      queue.push({ value: value, depth: depth });
+    }
+
+    while (queue.length && scanned < 6000) {
+      var item = queue.shift();
+      var val = item.value;
+      var depth = item.depth;
+      scanned += 1;
+
+      if (Array.isArray(val)) {
+        for (var ai = 0; ai < Math.min(val.length, 300); ai++) enqueue(val[ai], depth + 1);
+        continue;
+      }
+      if (val instanceof Map) {
+        var mi = 0;
+        val.forEach(function (mv, mk) { if (mi++ < 300) { enqueue(mk, depth + 1); enqueue(mv, depth + 1); } });
+        continue;
+      }
+      if (val instanceof Set) {
+        var si = 0;
+        val.forEach(function (sv) { if (si++ < 300) enqueue(sv, depth + 1); });
+        continue;
+      }
+
+      var desc = {};
+      try { desc = Object.getOwnPropertyDescriptors(val); } catch (_) { desc = {}; }
+      for (var key in desc) {
+        if (key === "__proto__" || key === "prototype" || key === "constructor") continue;
+        if ("value" in desc[key]) {
+          enqueue(desc[key].value, depth + 1);
+        }
+      }
+      // Also try for-in for inherited properties
+      try {
+        for (var fk in val) {
+          if (!(fk in desc) && fk !== "__proto__" && fk !== "constructor") {
+            enqueue(val[fk], depth + 1);
+          }
+        }
+      } catch (_) {}
+    }
+
+    var context = strings.join("\n");
+
+    // Extract ID — prefer oId= from kw:annex URLs, then subFileId, then generic 10-32 char ID
+    var id = (context.match(/[?&]oId=([A-Z0-9]{10,24})/i) || [])[1] ||
+             (context.match(/"subFileId"\s*:\s*"([A-Z0-9]{10,24})"/i) || [])[1] ||
+             (context.match(/"subFileId"\s*:\s*([A-Z0-9]{10,24})/i) || [])[1] ||
+             "";
+
+    // Fall back to scanObjectForAttachmentMeta for object-level ID
+    if (!id) {
+      try {
+        var objMeta = scanObjectForAttachmentMeta(rawValue, 10);
+        if (objMeta && objMeta.id) id = objMeta.id;
+      } catch (_) {}
+    }
+
+    // If we STILL don't have an ID, also try a generic 10-32 char pattern BUT only if it looks like a WPS ID (starts with letter, mixed case)
+    if (!id) {
+      var genericMatch = context.match(/\b([A-Z][A-Z0-9]{9,31})\b/);
+      if (genericMatch && !/^(true|false|null|undefined|NaN|Infinity)$/i.test(genericMatch[1])) {
+        id = genericMatch[1];
+      }
+    }
+
+    if (!id) return null;
+
+    // Extract metadata
+    var fileSize = (context.match(/[?&]fileSize=(\d+)/) || context.match(/"fileSize"\s*:\s*"?(\d+)/) || [])[1] || "";
+    var aType = (context.match(/[?&]aType=([a-z0-9]+)/i) || [])[1] || "pdf";
+    var fileName = decodeURIComponentSafe((context.match(/[?&]fileName=([^&"\\\n]+)/) || [])[1] || "");
+    var text = cleanText(strings.find(function (s) { return /(外箱标|预约信)/.test(s); }) || "");
+
+    // displayName: prefer cellText stripped of 📄, then fileName stripped of extension
+    var displayName = "";
+    if (cellText) {
+      displayName = cellText.replace(/^📄/, "").trim();
+    }
+    if (!displayName && fileName) {
+      displayName = fileName.replace(/\.(pdf|docx?|xlsx?|png|jpe?g)$/i, "");
+    }
+
+    return {
+      subFileId: id,
+      id: id,
+      fileSize: fileSize,
+      aType: aType,
+      fileName: fileName || (displayName ? displayName + ".pdf" : ""),
+      text: text || cellText || "",
+      displayName: displayName,
+      source: source,
+    };
+  }
+
   function scanLinkRunValueForAttachmentMeta(root, item, matchName) {
     const seen = new WeakSet();
     const queue = [{ value: root, depth: 0, path: "" }];
@@ -4486,6 +4605,2313 @@
     };
   }
 
+  // ===== Selection-based Attachment APIs =====
+
+  function getFieldNumber(obj, names) {
+    if (!obj || typeof obj !== "object") return NaN;
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      try {
+        var value = obj[name];
+        if (typeof value === "function") value = value.call(obj);
+        var number = Number(value);
+        if (Number.isFinite(number)) return number;
+      } catch (_) {}
+    }
+    return NaN;
+  }
+
+  function extractRangeBoundsDeep(raw, depth, seen) {
+    if (!raw || (typeof raw !== "object" && typeof raw !== "function")) return null;
+    if (raw instanceof Node || raw === window || raw === document) return null;
+    if (!seen) seen = new WeakSet();
+    if (seen.has(raw)) return null;
+    seen.add(raw);
+
+    var direct = extractRangeBounds(raw);
+    if (direct) return direct;
+    if (depth <= 0) return null;
+
+    var childKeys = [
+      "range",
+      "ranges",
+      "selection",
+      "selections",
+      "selectionRange",
+      "activeRange",
+      "selectedRange",
+      "currentRange",
+      "cellRange",
+      "ref",
+      "rect",
+      "start",
+      "end",
+      "_range",
+      "_selection",
+      "_activeRange",
+      // WPS internal structures from diagnosis
+      "windowInfo",
+      "activeCell",
+      "private",
+      "arr",
+      "row",
+      "col",
+    ];
+
+    for (var i = 0; i < childKeys.length; i++) {
+      try {
+        var child = raw[childKeys[i]];
+        if (typeof child === "function") child = child.call(raw);
+        if (Array.isArray(child)) {
+          for (var a = 0; a < child.length; a++) {
+            var fromArray = extractRangeBoundsDeep(child[a], depth - 1, seen);
+            if (fromArray) return fromArray;
+          }
+        } else {
+          var fromChild = extractRangeBoundsDeep(child, depth - 1, seen);
+          if (fromChild) return fromChild;
+        }
+      } catch (_) {}
+    }
+
+    var descriptors = {};
+    try {
+      descriptors = Object.getOwnPropertyDescriptors(raw);
+    } catch (_) {
+      return null;
+    }
+
+    for (var key in descriptors) {
+      if (!/(range|selection|select|active|cell|cursor|focus|highlight)/i.test(key)) continue;
+      if (!("value" in descriptors[key])) continue;
+      var value = descriptors[key].value;
+      var nested = extractRangeBoundsDeep(value, depth - 1, seen);
+      if (nested) return nested;
+    }
+
+    return null;
+  }
+
+  function findSelectedRangeBySurfaceScan() {
+    var app = window.APP;
+    var sheet = app && app.getActiveSheet && app.getActiveSheet();
+    var roots = [
+      { name: "APP", value: app },
+      { name: "tool", value: app && app.getUilCmdTool && app.getUilCmdTool() },
+      { name: "activeView", value: getActiveSheetViewLoose() },
+      { name: "activeSheet", value: sheet },
+      { name: "activeSheet.sheetData", value: sheet && sheet.sheetData },
+      { name: "workbook", value: app && app.workbook },
+    ];
+    var seen = new WeakSet();
+    var queue = [];
+
+    for (var i = 0; i < roots.length; i++) {
+      if (roots[i].value) queue.push({ path: roots[i].name, value: roots[i].value, depth: 0 });
+    }
+
+    while (queue.length) {
+      var current = queue.shift();
+      var value = current.value;
+      if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+      if (value instanceof Node || value === window || value === document) continue;
+      if (seen.has(value)) continue;
+      seen.add(value);
+
+      // Exclude pseudo-selection fields that are NOT the current user selection
+      var pseudoFields = /\b(_maxUsedRANGE|_autoFillRange|_activeChartDataSource|_activeChartDataSourceIdxMap|_inquireRange|formatPaintRange|_copyingRange|_tmpCopyingRange|_pasteSelectRANGE|_lastSelRange|_lastCellRANGE|_mouseDownRANGE|_allColumnsRANGE|_allRowsRANGE)\b/i;
+
+      if (/(selection|select|activeRange|selectedRange|currentRange|cursor|highlight)/i.test(current.path)) {
+        if (!pseudoFields.test(current.path)) {
+          var range = extractRangeBoundsDeep(value, 2);
+          if (range) {
+            range.method = "surface-scan:" + current.path;
+            return range;
+          }
+        }
+      }
+
+      if (current.depth >= 4) continue;
+
+      var descriptors = {};
+      try {
+        descriptors = Object.getOwnPropertyDescriptors(value);
+      } catch (_) {
+        continue;
+      }
+
+      for (var key in descriptors) {
+        if (!/(selection|select|active|range|cursor|focus|highlight|view|sheet|tool|cell)/i.test(key)) continue;
+        if (!("value" in descriptors[key])) continue;
+        var child = descriptors[key].value;
+        if (!child || (typeof child !== "object" && typeof child !== "function")) continue;
+        queue.push({ path: current.path + "." + key, value: child, depth: current.depth + 1 });
+      }
+    }
+
+    return null;
+  }
+
+  // ===== A1 Notation Range Parser =====
+
+  function columnLettersToIndex(letters) {
+    var s = String(letters || "").toUpperCase().replace(/[^A-Z]/g, "");
+    if (!s) return -1;
+    var result = 0;
+    for (var i = 0; i < s.length; i++) {
+      result = result * 26 + (s.charCodeAt(i) - 64);
+    }
+    return result - 1; // 0-based
+  }
+
+  function parseA1CellRef(ref) {
+    var text = String(ref || "").trim().toUpperCase();
+    var match = text.match(/^([A-Z]+)(\d+)$/);
+    if (!match) return null;
+    var colIndex = columnLettersToIndex(match[1]);
+    var rowIndex = parseInt(match[2], 10) - 1; // 0-based
+    if (colIndex < 0 || rowIndex < 0) return null;
+    return { rowIndex: rowIndex, colIndex: colIndex };
+  }
+
+  function parseA1Range(rangeText) {
+    var text = String(rangeText || "").trim().toUpperCase();
+    if (!text) return null;
+
+    // Single cell e.g. "F2"
+    var singleMatch = text.match(/^([A-Z]+)(\d+)$/);
+    if (singleMatch) {
+      var cell = parseA1CellRef(text);
+      if (!cell) return null;
+      return { rowFrom: cell.rowIndex, rowTo: cell.rowIndex, colFrom: cell.colIndex, colTo: cell.colIndex };
+    }
+
+    // Range e.g. "F2:F20" or "A1:C3"
+    var rangeMatch = text.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+    if (!rangeMatch) return null;
+
+    var colFrom = columnLettersToIndex(rangeMatch[1]);
+    var rowFrom = parseInt(rangeMatch[2], 10) - 1;
+    var colTo = columnLettersToIndex(rangeMatch[3]);
+    var rowTo = parseInt(rangeMatch[4], 10) - 1;
+
+    if (colFrom < 0 || rowFrom < 0 || colTo < 0 || rowTo < 0) return null;
+
+    return {
+      rowFrom: Math.min(rowFrom, rowTo),
+      rowTo: Math.max(rowFrom, rowTo),
+      colFrom: Math.min(colFrom, colTo),
+      colTo: Math.max(colFrom, colTo),
+    };
+  }
+
+  // ===== Selection Diagnosis API =====
+
+  function diagnoseSelectionApis() {
+    var started = Date.now();
+    var result = {
+      url: location.href,
+      title: document.title,
+      time: new Date().toISOString(),
+      hasWindowApp: !!window.APP,
+      hasActiveSheet: !!(window.APP && window.APP.getActiveSheet),
+      hasUilCmdTool: !!(window.APP && window.APP.getUilCmdTool),
+      activeViewInfo: null,
+      getSelectedRangeResult: null,
+      triedMethods: [],
+      surfaceScanHits: [],
+      relevantKeys: [],
+    };
+
+    // Active view info
+    try {
+      var view = getActiveSheetViewLoose();
+      if (view) {
+        result.activeViewInfo = {
+          ctor: view.constructor && view.constructor.name,
+          keys: [],
+        };
+        var desc = {};
+        try { desc = Object.getOwnPropertyDescriptors(view); } catch (_) {}
+        for (var key in desc) {
+          if (/(selection|select|range|active|cell|cursor|focus)/i.test(key)) {
+            result.activeViewInfo.keys.push(key);
+          }
+        }
+      }
+    } catch (e) {
+      result.activeViewInfo = { error: e.message || String(e) };
+    }
+
+    // Try each method and record results
+    var app = window.APP;
+    var sheet = app && app.getActiveSheet && app.getActiveSheet();
+    var tool = app && app.getUilCmdTool && app.getUilCmdTool();
+    var viewObj = view;
+
+    var methodAttempts = [
+      // Priority: confirmed WPS APIs from code traces and diagnosis
+      { target: "view", obj: viewObj, name: "getSelectionRange", args: [] },
+      { target: "view", obj: viewObj, name: "getSelection", args: [] },
+      { target: "app", obj: app, name: "getActiveSheetView", args: [] },
+      // view._selection sub-object
+      { target: "view._selection", obj: viewObj && viewObj._selection, name: "getSelectionRange", args: [] },
+      { target: "view._selection", obj: viewObj && viewObj._selection, name: "getSelection", args: [] },
+      // Standard tool APIs
+      { target: "tool", obj: tool, name: "getRangeSelection", args: [] },
+      { target: "tool", obj: tool, name: "getSelection", args: [] },
+      { target: "tool", obj: tool, name: "getSelectionRange", args: [] },
+      { target: "tool", obj: tool, name: "getActiveRange", args: [] },
+      { target: "tool", obj: tool, name: "getActiveSelection", args: [] },
+      { target: "tool", obj: tool, name: "getCurrentSelection", args: [] },
+      { target: "tool", obj: tool, name: "getSelectedRanges", args: [] },
+      { target: "tool", obj: tool, name: "getSelectionRanges", args: [] },
+      { target: "tool", obj: tool, name: "queryActiveRange", args: [] },
+      // Other view APIs
+      { target: "view", obj: viewObj, name: "getSelectionRANGE", args: [] },
+      { target: "view", obj: viewObj, name: "getActiveRange", args: [] },
+      { target: "view", obj: viewObj, name: "getSelectedRange", args: [] },
+      { target: "view", obj: viewObj, name: "getActiveSelection", args: [] },
+      { target: "view", obj: viewObj, name: "getCurrentSelection", args: [] },
+      // Sheet APIs
+      { target: "sheet", obj: sheet, name: "getSelectionRANGE", args: [] },
+      { target: "sheet", obj: sheet, name: "getSelection", args: [] },
+      { target: "sheet", obj: sheet, name: "getSelectionRange", args: [] },
+      // App APIs
+      { target: "app", obj: app, name: "getSelectionRange", args: [] },
+      { target: "app", obj: app, name: "getSelection", args: [] },
+      { target: "app", obj: app, name: "getActiveRange", args: [] },
+      { target: "app", obj: app, name: "getActiveSelection", args: [] },
+    ];
+
+    for (var m = 0; m < methodAttempts.length; m++) {
+      var attempt = methodAttempts[m];
+      var entry = { label: attempt.target + "." + attempt.name + "()" };
+      result.triedMethods.push(entry);
+
+      if (!attempt.obj || typeof attempt.obj[attempt.name] !== "function") {
+        entry.exists = false;
+        entry.error = "方法不存在或对象为 null";
+        continue;
+      }
+
+      entry.exists = true;
+      try {
+        var raw = attempt.obj[attempt.name].apply(attempt.obj, attempt.args);
+        if (raw == null) {
+          entry.result = null;
+          entry.bounds = null;
+        } else {
+          var ctor = raw.constructor && raw.constructor.name;
+          var summary = summarizeObjectDeep(raw, 2);
+          entry.result = JSON.stringify(summary).slice(0, 2000);
+          entry.ctor = ctor;
+          entry.bounds = extractRangeBoundsDeep(raw, 3);
+        }
+      } catch (e) {
+        entry.error = e.message || String(e);
+      }
+    }
+
+    // Surface scan for selection-like keys
+    var roots = [
+      { name: "APP", value: app },
+      { name: "tool", value: tool },
+      { name: "activeView", value: viewObj },
+      { name: "activeSheet", value: sheet },
+      { name: "workbook", value: app && app.workbook },
+    ];
+
+    for (var r = 0; r < roots.length; r++) {
+      if (!roots[r].value) continue;
+
+      var desc2 = {};
+      try { desc2 = Object.getOwnPropertyDescriptors(roots[r].value); } catch (_) { desc2 = {}; }
+
+      for (var key2 in desc2) {
+        if (/(selection|select|range|active|cell|cursor|focus|highlight|currentRange)/i.test(key2)) {
+          var entry2 = { path: roots[r].name + "." + key2 };
+          var val = desc2[key2].value;
+          if (val) {
+            var vt = typeof val;
+            entry2.type = vt;
+            if (vt === "function") {
+              entry2.preview = functionSourcePreview(val);
+              // Try calling zero-arg functions
+              if (val.length === 0) {
+                try {
+                  var callResult = val.call(roots[r].value);
+                  if (callResult != null) {
+                    entry2.callResult = summarizeValue(callResult);
+                    var callBounds = extractRangeBoundsDeep(callResult, 3);
+                    if (callBounds) entry2.callBounds = callBounds;
+                  }
+                } catch (e2) {
+                  entry2.callError = e2.message || String(e2);
+                }
+              }
+            } else if (vt === "object") {
+              entry2.summary = JSON.stringify(summarizeObjectDeep(val, 2)).slice(0, 800);
+              var scanBounds = extractRangeBoundsDeep(val, 3);
+              if (scanBounds) entry2.bounds = scanBounds;
+            }
+          }
+          result.relevantKeys.push(entry2);
+        }
+      }
+
+      // Also scan child properties that look like selection objects
+      var descriptors = {};
+      try { descriptors = Object.getOwnPropertyDescriptors(roots[r].value); } catch (_) { descriptors = {}; }
+
+      for (var key3 in descriptors) {
+        if (!("value" in descriptors[key3])) continue;
+        var val3 = descriptors[key3].value;
+        if (!val3 || (typeof val3 !== "object" && typeof val3 !== "function")) continue;
+        if (/(selection|select|active|range|cursor|focus|highlight)/i.test(key3)) {
+          // Skip known pseudo-fields
+          if (/\b(_maxUsedRANGE|_autoFillRange|_activeChartDataSource|_activeChartDataSourceIdxMap|_inquireRange|formatPaintRange|_copyingRange|_tmpCopyingRange|_pasteSelectRANGE|_lastSelRange|_lastCellRANGE|_mouseDownRANGE|_allColumnsRANGE|_allRowsRANGE)\b/i.test(key3)) continue;
+
+          try {
+            var bounds3 = extractRangeBoundsDeep(val3, 2);
+            if (bounds3 && Number.isFinite(bounds3.rowFrom)) {
+              result.surfaceScanHits.push({
+                path: roots[r].name + "." + key3,
+                bounds: bounds3,
+                summary: JSON.stringify(summarizeObjectDeep(val3, 2)).slice(0, 1200),
+              });
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Deep analysis: view.getSelection().windowInfo
+    if (viewObj && typeof viewObj.getSelection === "function") {
+      try {
+        var vsResult = viewObj.getSelection();
+        if (vsResult) {
+          var wiEntry = { path: "activeView", key: "getSelection().windowInfo" };
+          result.viewSelectionAnalysis = {};
+          if (vsResult.windowInfo) {
+            var wi = vsResult.windowInfo;
+            result.viewSelectionAnalysis.hasWindowInfo = true;
+            if (wi.selection) {
+              result.viewSelectionAnalysis.selectionType = typeof wi.selection;
+              result.viewSelectionAnalysis.selectionIsArray = Array.isArray(wi.selection);
+              if (Array.isArray(wi.selection) && wi.selection.length) {
+                result.viewSelectionAnalysis.selectionLength = wi.selection.length;
+                result.viewSelectionAnalysis.selection0Summary = JSON.stringify(summarizeObjectDeep(wi.selection[0], 2)).slice(0, 2000);
+                var sel0Bounds = extractRangeBoundsDeep(wi.selection[0], 3);
+                if (sel0Bounds) result.viewSelectionAnalysis.selection0Bounds = sel0Bounds;
+                else result.viewSelectionAnalysis.selection0Bounds = null;
+              }
+            }
+            if (wi.activeCell) {
+              result.viewSelectionAnalysis.activeCellSummary = JSON.stringify(summarizeObjectDeep(wi.activeCell, 2)).slice(0, 1200);
+              var acBounds = extractRangeBoundsDeep(wi.activeCell, 3);
+              result.viewSelectionAnalysis.activeCellBounds = acBounds || null;
+            }
+          }
+        }
+      } catch (e) {
+        result.viewSelectionAnalysis = { error: e.message || String(e) };
+      }
+    }
+
+    // Deep analysis: activeView.selections
+    if (viewObj && viewObj.selections) {
+      try {
+        var selObj = viewObj.selections;
+        result.selectionsAnalysis = {};
+        if (selObj.private) {
+          result.selectionsAnalysis.hasPrivate = true;
+          if (selObj.private.arr && Array.isArray(selObj.private.arr)) {
+            result.selectionsAnalysis.arrLength = selObj.private.arr.length;
+            if (selObj.private.arr.length) {
+              result.selectionsAnalysis.arr0Summary = JSON.stringify(summarizeObjectDeep(selObj.private.arr[0], 2)).slice(0, 2000);
+              var arr0Bounds = extractRangeBoundsDeep(selObj.private.arr[0], 3);
+              result.selectionsAnalysis.arr0Bounds = arr0Bounds || null;
+            }
+          }
+          if (selObj.private.activeCell) {
+            result.selectionsAnalysis.activeCellSummary = JSON.stringify(summarizeObjectDeep(selObj.private.activeCell, 2)).slice(0, 1200);
+            var aacBounds = extractRangeBoundsDeep(selObj.private.activeCell, 3);
+            result.selectionsAnalysis.activeCellBounds = aacBounds || null;
+          }
+        }
+      } catch (e) {
+        result.selectionsAnalysis = { error: e.message || String(e) };
+      }
+    }
+
+    // Run getSelectedRange and record its result
+    result.getSelectedRangeResult = getSelectedRange();
+
+    result.elapsedMs = Date.now() - started;
+    return result;
+  }
+
+  // ===== Deep Attachment ID Search (diagnostic only) =====
+
+  function findAttachmentIdsDeep(value) {
+    var result = {
+      ids: [],
+      paths: [],
+      matchedStrings: [],
+    };
+    var seen = new WeakSet();
+    var queue = [{ value: value, path: "", depth: 0 }];
+    var maxItems = 5000;
+    var scanned = 0;
+    var maxDepth = 5;
+
+    // ID field name patterns
+    var idKeyPattern = /^(id|oId|oid|subFileId|fileId|attachmentId|annexId|linkId|_id|_oId|_subFileId|_fileId|_attachmentId)$/i;
+    // Attachment-related key patterns to follow
+    var followPattern = /(link|run|runs|textLink|hyper|annex|attach|address|formula|href|url|download|cell|range|selection|data|meta|value)/i;
+
+    while (queue.length && scanned < maxItems) {
+      var item = queue.shift();
+      var val = item.value;
+      if (val == null) continue;
+      if (typeof val === "string") {
+        // Search for ID-like strings
+        var idMatches = val.match(/[A-Z0-9]{10,32}/g);
+        if (idMatches) {
+          for (var im = 0; im < idMatches.length; im++) {
+            if (result.ids.indexOf(idMatches[im]) < 0) {
+              result.ids.push(idMatches[im]);
+              result.matchedStrings.push("string-match@" + item.path + ": " + idMatches[im]);
+            }
+          }
+        }
+        // Search for kw:annex URLs
+        var annexMatches = val.match(/kw:annex[^\s"']*/gi);
+        if (annexMatches) {
+          for (var am = 0; am < annexMatches.length; am++) {
+            var url = annexMatches[am];
+            result.matchedStrings.push("annex-url@" + item.path + ": " + url.slice(0, 200));
+            var oidMatch = url.match(/oId=([A-Z0-9]{10,32})/i);
+            if (oidMatch && result.ids.indexOf(oidMatch[1]) < 0) {
+              result.ids.push(oidMatch[1]);
+            }
+          }
+        }
+        continue;
+      }
+      if (typeof val !== "object") continue;
+      if (val instanceof Node || val === window || val === document) continue;
+      if (seen.has(val)) continue;
+      seen.add(val);
+      scanned++;
+
+      if (item.depth >= maxDepth) continue;
+
+      // Check for ID-like keys at this level
+      var keys = [];
+      try {
+        if (Array.isArray(val)) {
+          for (var ai = 0; ai < Math.min(val.length, 100); ai++) {
+            queue.push({ value: val[ai], path: item.path + "[" + ai + "]", depth: item.depth + 1 });
+          }
+          continue;
+        }
+        // Get keys from both own properties and prototype descriptors
+        var desc = {};
+        try { desc = Object.getOwnPropertyDescriptors(val); } catch (_) { desc = {}; }
+        keys = Object.keys(desc);
+      } catch (_) {
+        keys = [];
+      }
+
+      for (var ki = 0; ki < keys.length; ki++) {
+        var key = keys[ki];
+        if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+
+        var childPath = item.path ? item.path + "." + key : key;
+
+        if (idKeyPattern.test(key)) {
+          var descVal = desc[key];
+          var rawVal = "value" in descVal ? descVal.value : undefined;
+          if (typeof rawVal === "function") {
+            try { rawVal = rawVal.call(val); } catch (_) {}
+          }
+          if (rawVal != null && typeof rawVal !== "object") {
+            var strVal = String(rawVal);
+            if (/^[A-Z0-9]{10,32}$/i.test(strVal)) {
+              if (result.ids.indexOf(strVal) < 0) {
+                result.ids.push(strVal);
+                result.paths.push(childPath);
+                result.matchedStrings.push("key-match@" + childPath + ": " + strVal);
+              }
+            }
+          }
+        }
+
+        // Follow interesting children
+        if (followPattern.test(key) || idKeyPattern.test(key)) {
+          if ("value" in descVal) {
+            var childVal = descVal.value;
+            if (childVal != null && (typeof childVal === "object" || typeof childVal === "string")) {
+              queue.push({ value: childVal, path: childPath, depth: item.depth + 1 });
+            }
+          }
+        }
+      }
+
+      // Also follow properties from for-in (catches inherited getters)
+      try {
+        for (var fk in val) {
+          if (followPattern.test(fk) && !(fk in desc)) {
+            var fv = val[fk];
+            if (fv != null) {
+              var fp = item.path ? item.path + "." + fk : fk;
+              queue.push({ value: fv, path: fp, depth: item.depth + 1 });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Deduplicate
+    var uniqueIds = [];
+    for (var ui = 0; ui < result.ids.length; ui++) {
+      if (uniqueIds.indexOf(result.ids[ui]) < 0) uniqueIds.push(result.ids[ui]);
+    }
+    result.ids = uniqueIds;
+    result.scannedNodes = scanned;
+
+    return result;
+  }
+
+  // ===== Selected Attachment Cell Deep Diagnosis =====
+
+  async function diagnoseSelectedAttachmentCells(options) {
+    options = options || {};
+    var started = Date.now();
+    var rangeOverride = options.rangeOverride || "";
+
+    var result = {
+      ok: false,
+      url: location.href,
+      title: document.title,
+      time: new Date().toISOString(),
+      range: null,
+      cells: [],
+      summary: { total: 0, diagnosed: 0, truncated: false },
+      elapsedMs: 0,
+    };
+
+    // Resolve range
+    var rangeOpts = {};
+    if (rangeOverride && String(rangeOverride).trim()) {
+      rangeOpts.rangeOverride = rangeOverride;
+    }
+    var rangeResult = getSelectedRange(rangeOpts);
+    if (!rangeResult.ok && !Number.isFinite(rangeResult.rowFrom)) {
+      result.range = rangeResult;
+      result.error = rangeResult.error || "无法读取范围";
+      result.elapsedMs = Date.now() - started;
+      return result;
+    }
+
+    var rowFrom = Number(rangeResult.rowFrom);
+    var rowTo = Number(rangeResult.rowTo);
+    var colFrom = Number(rangeResult.colFrom);
+    var colTo = Number(rangeResult.colTo);
+    result.range = { rowFrom: rowFrom, rowTo: rowTo, colFrom: colFrom, colTo: colTo, method: rangeResult.method };
+
+    var totalCells = (rowTo - rowFrom + 1) * (colTo - colFrom + 1);
+    result.summary.total = totalCells;
+    var maxCells = 10;
+    var cellCount = 0;
+    var truncated = totalCells > maxCells;
+
+    var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
+
+    for (var r = rowFrom; r <= rowTo && cellCount < maxCells; r++) {
+      for (var c = colFrom; c <= colTo && cellCount < maxCells; c++) {
+        cellCount++;
+
+        var cellEntry = {
+          rowIndex: r,
+          rowNumber: r + 1,
+          colIndex: c,
+          colName: columnNameFromIndex(c),
+          address: columnNameFromIndex(c) + (r + 1),
+          cellText: "",
+          looksLikeAttachment: false,
+          detectedByCurrentLogic: false,
+          currentDetectAttempts: [],
+          rawSources: {},
+        };
+
+        // Read cell text
+        try {
+          cellEntry.cellText = getWpsCellText(r, c);
+          cellEntry.looksLikeAttachment = !!(cellEntry.cellText && /📄/.test(cellEntry.cellText));
+        } catch (e) {
+          cellEntry.cellText = "[error: " + (e.message || String(e)) + "]";
+        }
+
+        // Run current detection logic
+        try {
+          var currentResult = await detectAttachmentMetaAtCell(r, c);
+          if (currentResult) {
+            cellEntry.detectedByCurrentLogic = currentResult.isAttachment;
+            cellEntry.currentDetectAttempts = currentResult.detectAttempts || [];
+          }
+        } catch (_) {}
+
+        // === rawSources ===
+
+        // 1. cell-object
+        var cellObj = null;
+        try {
+          cellObj = getCellObjectAt(r, c);
+          if (cellObj) {
+            var coSummary = summarizeObjectDeep(cellObj, 5);
+            var coMeta = scanObjectForAttachmentMeta(cellObj, 10);
+            var coIdSearch = findAttachmentIdsDeep(cellObj);
+            cellEntry.rawSources["cell-object"] = {
+              summary: JSON.stringify(coSummary).slice(0, 5000),
+              scanMeta: coMeta ? {
+                id: coMeta.id || "",
+                fileSize: coMeta.fileSize || "",
+                aType: coMeta.aType || "",
+                fileName: coMeta.fileName || "",
+                text: coMeta.text || "",
+              } : null,
+              deepIdSearch: {
+                ids: coIdSearch.ids,
+                paths: coIdSearch.paths.slice(0, 20),
+                matchedStrings: coIdSearch.matchedStrings.slice(0, 30),
+              },
+            };
+          }
+        } catch (e) {
+          cellEntry.rawSources["cell-object"] = { error: e.message || String(e) };
+        }
+
+        // 2. activeSheet.getTextLinkRuns(r,c)
+        if (sheet) {
+          var textLinkMethods = [
+            { label: "getTextLinkRuns", fn: function () { return sheet.getTextLinkRuns && sheet.getTextLinkRuns(r, c); } },
+            { label: "getTextLinkRunsByCell", fn: function () { return sheet.getTextLinkRunsByCell && sheet.getTextLinkRunsByCell(r, c, cellObj); } },
+            { label: "getHyperlink", fn: function () { return sheet.getHyperlink && sheet.getHyperlink(r, c); } },
+            { label: "getCoreHyperlinks.getCellLinkRuns", fn: function () {
+              if (!sheet.getCoreHyperlinks) return null;
+              var core = sheet.getCoreHyperlinks();
+              return core && core.getCellLinkRuns && core.getCellLinkRuns(r, c);
+            }},
+            { label: "getCoreHyperlinks.getHyperlink", fn: function () {
+              if (!sheet.getCoreHyperlinks) return null;
+              var core = sheet.getCoreHyperlinks();
+              return core && core.getHyperlink && core.getHyperlink(r, c);
+            }},
+          ];
+
+          for (var tm = 0; tm < textLinkMethods.length; tm++) {
+            var tlm = textLinkMethods[tm];
+            var sourceObj = {};
+            try {
+              var rawVal = tlm.fn();
+              if (rawVal != null) {
+                sourceObj.summary = JSON.stringify(summarizeObjectDeep(rawVal, 6)).slice(0, 5000);
+                var itemLike = { rowIndex: r, colIndex: c, row: r + 1, type: "selected", key: r + ":" + c, sourceText: cellEntry.cellText, targetBase: cellEntry.cellText };
+                var slvMeta = scanLinkRunValueForAttachmentMeta(rawVal, itemLike, "diag-" + tlm.label);
+                sourceObj.scanLinkMeta = slvMeta ? {
+                  id: slvMeta.id || "",
+                  fileSize: slvMeta.fileSize || "",
+                  aType: slvMeta.aType || "",
+                  fileName: slvMeta.fileName || "",
+                  text: slvMeta.text || "",
+                  match: slvMeta.match || "",
+                } : null;
+                var scanObjMeta = scanObjectForAttachmentMeta(rawVal, 10);
+                sourceObj.scanObjMeta = scanObjMeta ? {
+                  id: scanObjMeta.id || "",
+                  fileSize: scanObjMeta.fileSize || "",
+                  aType: scanObjMeta.aType || "",
+                  fileName: scanObjMeta.fileName || "",
+                  text: scanObjMeta.text || "",
+                } : null;
+                var idSearch = findAttachmentIdsDeep(rawVal);
+                sourceObj.deepIdSearch = {
+                  ids: idSearch.ids,
+                  paths: idSearch.paths.slice(0, 20),
+                  matchedStrings: idSearch.matchedStrings.slice(0, 30),
+                };
+              } else {
+                sourceObj.result = null;
+              }
+            } catch (e2) {
+              sourceObj.error = e2.message || String(e2);
+            }
+            cellEntry.rawSources[tlm.label] = sourceObj;
+          }
+        }
+
+        // 3. range-query with multiple option variants
+        try {
+          var range = createWpsRange(r, r, c, c);
+          if (range) {
+            var rqSources = {};
+            var optionVariants = [
+              { label: "default", opts: {} },
+              { label: "includeTextLinkRuns", opts: { includeTextLinkRuns: true, includeRuns: true } },
+              { label: "needTextLinkRuns", opts: { needTextLinkRuns: true, needRuns: true } },
+              { label: "withTextLinkRuns", opts: { withTextLinkRuns: true, withRuns: true } },
+            ];
+            for (var ov = 0; ov < optionVariants.length; ov++) {
+              var ovOpt = optionVariants[ov];
+              try {
+                var rv = await queryRangeValuesViaUil(range, ovOpt.opts);
+                if (rv) {
+                  var rqEntry = {
+                    summary: JSON.stringify(summarizeObjectDeep(rv, 6)).slice(0, 5000),
+                  };
+                  var rqMeta = scanObjectForAttachmentMeta(rv, 10);
+                  rqEntry.scanMeta = rqMeta ? {
+                    id: rqMeta.id || "",
+                    fileSize: rqMeta.fileSize || "",
+                    aType: rqMeta.aType || "",
+                    fileName: rqMeta.fileName || "",
+                    text: rqMeta.text || "",
+                  } : null;
+                  var rqIdSearch = findAttachmentIdsDeep(rv);
+                  rqEntry.deepIdSearch = {
+                    ids: rqIdSearch.ids,
+                    paths: rqIdSearch.paths.slice(0, 20),
+                    matchedStrings: rqIdSearch.matchedStrings.slice(0, 30),
+                  };
+                  rqSources[ovOpt.label] = rqEntry;
+                } else {
+                  rqSources[ovOpt.label] = { result: null };
+                }
+              } catch (e3) {
+                rqSources[ovOpt.label] = { error: e3.message || String(e3) };
+              }
+            }
+            cellEntry.rawSources["range-query"] = rqSources;
+          }
+        } catch (e) {
+          cellEntry.rawSources["range-query"] = { error: e.message || String(e) };
+        }
+
+        // 4. selected-hyperlink (read-only, only if single cell)
+        if (totalCells === 1) {
+          var selHyperSources = {};
+          var targets = [];
+          var tool2 = window.APP && window.APP.getUilCmdTool && window.APP.getUilCmdTool();
+          if (tool2) targets.push({ name: "tool", value: tool2 });
+          if (sheet) targets.push({ name: "activeSheet", value: sheet });
+          var view2 = getActiveSheetViewLoose();
+          if (view2) targets.push({ name: "activeView", value: view2 });
+          if (window.APP) targets.push({ name: "APP", value: window.APP });
+
+          var selMethodNames = [
+            "getSelectHyperlink", "getSelectedHyperlink", "getSelectionHyperlink",
+            "getSelectedLink", "getSelectionLink", "getSelectedTextLink",
+            "getHyperlinkByCell", "getCellHyperlink", "getCellTextLink",
+            "getTextLinkByCell", "getTextLinkData", "getLinkData", "getLinkInfo",
+          ];
+
+          for (var tgi = 0; tgi < targets.length; tgi++) {
+            var tg = targets[tgi];
+            for (var sm = 0; sm < selMethodNames.length; sm++) {
+              var methodName = selMethodNames[sm];
+              if (!tg.value || typeof tg.value[methodName] !== "function") continue;
+              var entryKey = tg.name + "." + methodName + "()";
+              try {
+                var shVal = await callMaybePromise(function (done) {
+                  var fn2 = tg.value[methodName];
+                  if (fn2.length > 0) {
+                    // Try with row/col args
+                    return fn2.call(tg.value, r, c, done);
+                  }
+                  return fn2.call(tg.value);
+                }, 2000);
+                if (shVal != null) {
+                  var shEntry = {
+                    summary: JSON.stringify(summarizeObjectDeep(shVal, 6)).slice(0, 5000),
+                  };
+                  var shMeta = scanObjectForAttachmentMeta(shVal, 10);
+                  shEntry.scanMeta = shMeta ? {
+                    id: shMeta.id || "",
+                    fileSize: shMeta.fileSize || "",
+                    aType: shMeta.aType || "",
+                    fileName: shMeta.fileName || "",
+                    text: shMeta.text || "",
+                  } : null;
+                  var shIdSearch = findAttachmentIdsDeep(shVal);
+                  shEntry.deepIdSearch = {
+                    ids: shIdSearch.ids,
+                    paths: shIdSearch.paths.slice(0, 20),
+                    matchedStrings: shIdSearch.matchedStrings.slice(0, 30),
+                  };
+                  selHyperSources[entryKey] = shEntry;
+                }
+              } catch (e4) {
+                selHyperSources[entryKey] = { error: e4.message || String(e4) };
+              }
+            }
+          }
+          cellEntry.rawSources["selected-hyperlink"] = selHyperSources;
+        }
+
+        result.cells.push(cellEntry);
+      }
+    }
+
+    result.ok = true;
+    result.summary.diagnosed = result.cells.length;
+    result.summary.truncated = truncated;
+    result.elapsedMs = Date.now() - started;
+    return result;
+  }
+
+  function getSelectedRange(options) {
+    options = options || {};
+
+    // Manual range override
+    var rangeOverride = options.rangeOverride || "";
+    if (rangeOverride && String(rangeOverride).trim()) {
+      var parsed = parseA1Range(rangeOverride);
+      if (!parsed) {
+        return {
+          ok: false,
+          error: "手动范围格式不正确，请输入类似 F2:F20 或 A1:C3",
+          rangeOverride: rangeOverride,
+        };
+      }
+      parsed.method = "manual-override";
+      parsed.ok = true;
+      return parsed;
+    }
+
+    var app = window.APP;
+    var sheet = app && app.getActiveSheet && app.getActiveSheet();
+    var view = getActiveSheetViewLoose();
+    var tool = app && app.getUilCmdTool && app.getUilCmdTool();
+
+    // Priority attempts — WPS current-version confirmed APIs first
+    var attempts = [
+      // == view.getSelectionRange() — confirmed via WPS source ==
+      ["view.getSelectionRange()", function () {
+        if (!view || typeof view.getSelectionRange !== "function") return null;
+        return view.getSelectionRange();
+      }],
+
+      // == view.getSelection() — returns windowInfo.selection ==
+      ["view.getSelection()", function () {
+        if (!view || typeof view.getSelection !== "function") return null;
+        return view.getSelection();
+      }],
+
+      // == app.getActiveSheetView().getSelectionRange() — confirmed via WPS source ==
+      ["app.getActiveSheetView().getSelectionRange()", function () {
+        if (!app || typeof app.getActiveSheetView !== "function") return null;
+        var sv = app.getActiveSheetView();
+        if (!sv || typeof sv.getSelectionRange !== "function") return null;
+        return sv.getSelectionRange();
+      }],
+
+      // == view._selection sub-object ==
+      ["view._selection.getSelectionRange()", function () {
+        if (!view || !view._selection || typeof view._selection.getSelectionRange !== "function") return null;
+        return view._selection.getSelectionRange();
+      }],
+      ["view._selection.getSelection()", function () {
+        if (!view || !view._selection || typeof view._selection.getSelection !== "function") return null;
+        return view._selection.getSelection();
+      }],
+
+      // == selections object (diagnosis found selections.private.arr) ==
+      ["view.selections", function () {
+        if (!view || !view.selections) return null;
+        var selObj = view.selections;
+        // selections.private.arr[0]
+        if (selObj.private && selObj.private.arr && Array.isArray(selObj.private.arr) && selObj.private.arr.length) {
+          return selObj.private.arr[0];
+        }
+        return selObj;
+      }],
+
+      // == tool APIs ==
+      ["tool.getRangeSelection()", function () {
+        if (!tool || typeof tool.getRangeSelection !== "function") return null;
+        return tool.getRangeSelection();
+      }],
+      ["tool.getSelection()", function () {
+        if (!tool || typeof tool.getSelection !== "function") return null;
+        return tool.getSelection();
+      }],
+      ["tool.getSelectionRange()", function () {
+        if (!tool || typeof tool.getSelectionRange !== "function") return null;
+        return tool.getSelectionRange();
+      }],
+      ["tool.getActiveRange()", function () {
+        if (!tool || typeof tool.getActiveRange !== "function") return null;
+        return tool.getActiveRange();
+      }],
+      ["tool.getActiveSelection()", function () {
+        if (!tool || typeof tool.getActiveSelection !== "function") return null;
+        return tool.getActiveSelection();
+      }],
+      ["tool.getCurrentSelection()", function () {
+        if (!tool || typeof tool.getCurrentSelection !== "function") return null;
+        return tool.getCurrentSelection();
+      }],
+      ["tool.getSelectedRanges()", function () {
+        if (!tool || typeof tool.getSelectedRanges !== "function") return null;
+        return tool.getSelectedRanges();
+      }],
+      ["tool.getSelectionRanges()", function () {
+        if (!tool || typeof tool.getSelectionRanges !== "function") return null;
+        return tool.getSelectionRanges();
+      }],
+
+      // == remaining view APIs ==
+      ["view.getSelectionRANGE()", function () {
+        if (!view || typeof view.getSelectionRANGE !== "function") return null;
+        return view.getSelectionRANGE();
+      }],
+      ["view.getActiveRange()", function () {
+        if (!view || typeof view.getActiveRange !== "function") return null;
+        return view.getActiveRange();
+      }],
+      ["view.getSelectedRange()", function () {
+        if (!view || typeof view.getSelectedRange !== "function") return null;
+        return view.getSelectedRange();
+      }],
+      ["view.getActiveSelection()", function () {
+        if (!view || typeof view.getActiveSelection !== "function") return null;
+        return view.getActiveSelection();
+      }],
+      ["view.getCurrentSelection()", function () {
+        if (!view || typeof view.getCurrentSelection !== "function") return null;
+        return view.getCurrentSelection();
+      }],
+
+      // == sheet APIs ==
+      ["sheet.getSelectionRANGE()", function () {
+        if (!sheet || typeof sheet.getSelectionRANGE !== "function") return null;
+        return sheet.getSelectionRANGE();
+      }],
+      ["sheet.getSelection()", function () {
+        if (!sheet || typeof sheet.getSelection !== "function") return null;
+        return sheet.getSelection();
+      }],
+      ["sheet.getSelectionRange()", function () {
+        if (!sheet || typeof sheet.getSelectionRange !== "function") return null;
+        return sheet.getSelectionRange();
+      }],
+
+      // == app APIs ==
+      ["app.getSelectionRange()", function () {
+        if (!app || typeof app.getSelectionRange !== "function") return null;
+        return app.getSelectionRange();
+      }],
+      ["app.getSelection()", function () {
+        if (!app || typeof app.getSelection !== "function") return null;
+        return app.getSelection();
+      }],
+      ["app.getActiveRange()", function () {
+        if (!app || typeof app.getActiveRange !== "function") return null;
+        return app.getActiveRange();
+      }],
+      ["app.getActiveSelection()", function () {
+        if (!app || typeof app.getActiveSelection !== "function") return null;
+        return app.getActiveSelection();
+      }],
+
+      ["tool.queryActiveRange()", function () {
+        if (!tool || typeof tool.queryActiveRange !== "function") return null;
+        return tool.queryActiveRange();
+      }],
+    ];
+
+    var lastError = null;
+    for (var i = 0; i < attempts.length; i++) {
+      var label = attempts[i][0];
+      var fn = attempts[i][1];
+      try {
+        var result = fn();
+        if (result) {
+          var rangeInfo = extractRangeBoundsDeep(result, 3);
+          if (rangeInfo && Number.isFinite(rangeInfo.rowFrom) && Number.isFinite(rangeInfo.colFrom)) {
+            rangeInfo.method = label;
+            return rangeInfo;
+          }
+
+          // Special handling: view.getSelection() may return windowInfo.selection array
+          if (/view\.getSelection/.test(label)) {
+            var wiSel = result;
+            // Try windowInfo.selection[0]
+            try {
+              if (wiSel.windowInfo && wiSel.windowInfo.selection && Array.isArray(wiSel.windowInfo.selection) && wiSel.windowInfo.selection.length) {
+                var sel0 = wiSel.windowInfo.selection[0];
+                var sel0Range = extractRangeBoundsDeep(sel0, 3);
+                if (sel0Range && Number.isFinite(sel0Range.rowFrom) && Number.isFinite(sel0Range.colFrom)) {
+                  sel0Range.method = label + ".windowInfo.selection[0]";
+                  return sel0Range;
+                }
+              }
+            } catch (_) {}
+            // Try windowInfo.activeCell
+            try {
+              if (wiSel.windowInfo && wiSel.windowInfo.activeCell) {
+                var ac = wiSel.windowInfo.activeCell;
+                var acRange = extractRangeBoundsDeep(ac, 3);
+                if (acRange && Number.isFinite(acRange.rowFrom) && Number.isFinite(acRange.colFrom)) {
+                  acRange.method = label + ".windowInfo.activeCell";
+                  return acRange;
+                }
+              }
+            } catch (_) {}
+            // Try activeCell on the result directly
+            try {
+              if (wiSel.activeCell) {
+                var dac = wiSel.activeCell;
+                var dacRange = extractRangeBoundsDeep(dac, 3);
+                if (dacRange && Number.isFinite(dacRange.rowFrom) && Number.isFinite(dacRange.colFrom)) {
+                  dacRange.method = label + ".activeCell";
+                  return dacRange;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (e) {
+        lastError = { method: label, message: e.message || String(e) };
+      }
+    }
+
+    var scannedRange = findSelectedRangeBySurfaceScan();
+    if (scannedRange && Number.isFinite(scannedRange.rowFrom) && Number.isFinite(scannedRange.colFrom)) {
+      return scannedRange;
+    }
+
+    return {
+      ok: false,
+      error: "无法读取当前选区：所有已知的选区 API 均失败",
+      lastError: lastError,
+      triedMethods: attempts.map(function (a) { return a[0]; }),
+    };
+  }
+
+  function extractRangeBounds(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    var bounds = {
+      rowFrom: getFieldNumber(raw, ["rowFrom", "startRow", "rowStart", "firstRow", "fromRow", "topRow", "row1", "r1", "_rowFrom", "_startRow"]),
+      rowTo: getFieldNumber(raw, ["rowTo", "endRow", "rowEnd", "lastRow", "toRow", "bottomRow", "row2", "r2", "_rowTo", "_endRow"]),
+      colFrom: getFieldNumber(raw, ["colFrom", "startCol", "colStart", "firstCol", "fromCol", "leftCol", "col1", "c1", "_colFrom", "_startCol"]),
+      colTo: getFieldNumber(raw, ["colTo", "endCol", "colEnd", "lastCol", "toCol", "rightCol", "col2", "c2", "_colTo", "_endCol"]),
+    };
+
+    var singleRow = getFieldNumber(raw, ["row", "ri", "rowIndex", "_row", "_ri"]);
+    var singleCol = getFieldNumber(raw, ["col", "ci", "colIndex", "_col", "_ci"]);
+    if (!Number.isFinite(bounds.rowFrom) && Number.isFinite(singleRow)) {
+      bounds.rowFrom = singleRow;
+      bounds.rowTo = singleRow;
+    }
+    if (!Number.isFinite(bounds.colFrom) && Number.isFinite(singleCol)) {
+      bounds.colFrom = singleCol;
+      bounds.colTo = singleCol;
+    }
+
+    // rowOff / colOff (WPS internal cell offset style)
+    if (!Number.isFinite(bounds.rowFrom)) {
+      var ro = getFieldNumber(raw, ["rowOff", "_rowOff"]);
+      if (Number.isFinite(ro)) { bounds.rowFrom = ro; bounds.rowTo = ro; }
+    }
+    if (!Number.isFinite(bounds.colFrom)) {
+      var co = getFieldNumber(raw, ["colOff", "_colOff"]);
+      if (Number.isFinite(co)) { bounds.colFrom = co; bounds.colTo = co; }
+    }
+
+    // idxRg (WPS internal indexed range)
+    if (!Number.isFinite(bounds.rowFrom)) {
+      var idxRg = raw.idxRg;
+      if (idxRg && typeof idxRg === "object") {
+        var irFrom = getFieldNumber(idxRg, ["_start", "start", "first", "rowFrom"]);
+        var irTo = getFieldNumber(idxRg, ["_end", "end", "last", "rowTo"]);
+        if (Number.isFinite(irFrom)) { bounds.rowFrom = irFrom; bounds.rowTo = Number.isFinite(irTo) ? irTo : irFrom; }
+      }
+    }
+
+    // Handle getter methods
+    if (raw.getRowFrom && typeof raw.getRowFrom === "function") {
+      try { bounds.rowFrom = Number(raw.getRowFrom()); } catch (_) {}
+    }
+    if (raw.getRowTo && typeof raw.getRowTo === "function") {
+      try { bounds.rowTo = Number(raw.getRowTo()); } catch (_) {}
+    }
+    if (raw.getColFrom && typeof raw.getColFrom === "function") {
+      try { bounds.colFrom = Number(raw.getColFrom()); } catch (_) {}
+    }
+    if (raw.getColTo && typeof raw.getColTo === "function") {
+      try { bounds.colTo = Number(raw.getColTo()); } catch (_) {}
+    }
+    if (raw.getStartRow && typeof raw.getStartRow === "function") {
+      try { bounds.rowFrom = Number(raw.getStartRow()); } catch (_) {}
+    }
+    if (raw.getEndRow && typeof raw.getEndRow === "function") {
+      try { bounds.rowTo = Number(raw.getEndRow()); } catch (_) {}
+    }
+    if (raw.getStartCol && typeof raw.getStartCol === "function") {
+      try { bounds.colFrom = Number(raw.getStartCol()); } catch (_) {}
+    }
+    if (raw.getEndCol && typeof raw.getEndCol === "function") {
+      try { bounds.colTo = Number(raw.getEndCol()); } catch (_) {}
+    }
+
+    if (raw.getRow && typeof raw.getRow === "function") {
+      try {
+        var r = Number(raw.getRow());
+        if (Number.isFinite(r)) { bounds.rowFrom = r; bounds.rowTo = r; }
+      } catch (_) {}
+    }
+    if (raw.getCol && typeof raw.getCol === "function") {
+      try {
+        var c = Number(raw.getCol());
+        if (Number.isFinite(c)) { bounds.colFrom = c; bounds.colTo = c; }
+      } catch (_) {}
+    }
+
+    // If we have a selections array on the raw object, try the first element
+    if (!Number.isFinite(bounds.rowFrom) && raw.selections) {
+      try {
+        var selArray = raw.selections;
+        if (typeof selArray === "function") selArray = selArray.call(raw);
+        if (Array.isArray(selArray) && selArray.length) {
+          var selBounds = extractRangeBoundsDeep(selArray[0], 2);
+          if (selBounds && Number.isFinite(selBounds.rowFrom)) {
+            bounds.rowFrom = selBounds.rowFrom;
+            bounds.rowTo = selBounds.rowTo;
+            bounds.colFrom = selBounds.colFrom;
+            bounds.colTo = selBounds.colTo;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (Number.isFinite(bounds.rowFrom) && !Number.isFinite(bounds.rowTo)) bounds.rowTo = bounds.rowFrom;
+    if (Number.isFinite(bounds.colFrom) && !Number.isFinite(bounds.colTo)) bounds.colTo = bounds.colFrom;
+
+    if (Number.isFinite(bounds.rowTo) && !Number.isFinite(bounds.rowFrom)) bounds.rowFrom = bounds.rowTo;
+    if (Number.isFinite(bounds.colTo) && !Number.isFinite(bounds.colFrom)) bounds.colFrom = bounds.colTo;
+
+    if (!Number.isFinite(bounds.rowFrom) || !Number.isFinite(bounds.colFrom)) return null;
+    if (!Number.isFinite(bounds.rowTo)) bounds.rowTo = bounds.rowFrom;
+    if (!Number.isFinite(bounds.colTo)) bounds.colTo = bounds.colFrom;
+
+    return {
+      rowFrom: Math.min(bounds.rowFrom, bounds.rowTo),
+      rowTo: Math.max(bounds.rowFrom, bounds.rowTo),
+      colFrom: Math.min(bounds.colFrom, bounds.colTo),
+      colTo: Math.max(bounds.colFrom, bounds.colTo),
+    };
+  }
+
+  // ===== Enhanced Attachment Detection =====
+
+  async function detectAttachmentMetaAtCell(rowIndex, colIndex) {
+    var result = {
+      rowIndex: rowIndex,
+      colIndex: colIndex,
+      cellText: "",
+      isAttachment: false,
+      attachmentMeta: null,
+      detectSource: "",
+      detectAttempts: [],
+      error: null,
+    };
+
+    // Step 0: Read cell text
+    try {
+      result.cellText = getWpsCellText(rowIndex, colIndex);
+    } catch (e) {
+      result.error = "读取单元格文本失败: " + (e.message || String(e));
+      return result;
+    }
+
+    // Step 1: Scan cell object
+    var cellObj = null;
+    try {
+      cellObj = getCellObjectAt(rowIndex, colIndex);
+      if (cellObj) {
+        var cellMeta = scanObjectForAttachmentMeta(cellObj, 8);
+        if (cellMeta && cellMeta.id) {
+          result.isAttachment = true;
+          result.attachmentMeta = {
+            subFileId: cellMeta.id,
+            fileSize: cellMeta.fileSize || "",
+            aType: cellMeta.aType || "pdf",
+            fileName: cellMeta.fileName || "",
+            text: cellMeta.text || "",
+            displayName: result.cellText.replace(/^📄/, ""),
+          };
+          result.detectSource = "cell-object";
+          result.detectAttempts.push({ path: "cell-object", ok: true, id: cellMeta.id });
+          return result;
+        }
+        result.detectAttempts.push({ path: "cell-object", ok: false, reason: "no-id" });
+      } else {
+        result.detectAttempts.push({ path: "cell-object", ok: false, reason: "no-cell-obj" });
+      }
+    } catch (e) {
+      result.detectAttempts.push({ path: "cell-object", ok: false, reason: "error", error: e.message || String(e) });
+    }
+
+    // Step 2: Try hyperlink providers (direct calls only — fast path)
+    var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
+    if (sheet) {
+      var directCalls = [
+        {
+          label: "getTextLinkRuns",
+          fn: function () {
+            if (!sheet.getTextLinkRuns) return null;
+            return sheet.getTextLinkRuns(rowIndex, colIndex);
+          },
+        },
+        {
+          label: "getTextLinkRunsByCell",
+          fn: function () {
+            if (!sheet.getTextLinkRunsByCell) return null;
+            return sheet.getTextLinkRunsByCell(rowIndex, colIndex, cellObj);
+          },
+        },
+        {
+          label: "getHyperlink",
+          fn: function () {
+            if (!sheet.getHyperlink) return null;
+            return sheet.getHyperlink(rowIndex, colIndex);
+          },
+        },
+        {
+          label: "getCoreHyperlinks.getCellLinkRuns",
+          fn: function () {
+            if (!sheet.getCoreHyperlinks) return null;
+            var core = sheet.getCoreHyperlinks();
+            if (!core || !core.getCellLinkRuns) return null;
+            return core.getCellLinkRuns(rowIndex, colIndex);
+          },
+        },
+        {
+          label: "getCoreHyperlinks.getHyperlink",
+          fn: function () {
+            if (!sheet.getCoreHyperlinks) return null;
+            var core = sheet.getCoreHyperlinks();
+            if (!core || !core.getHyperlink) return null;
+            return core.getHyperlink(rowIndex, colIndex);
+          },
+        },
+      ];
+
+      for (var dl = 0; dl < directCalls.length; dl++) {
+        var dc = directCalls[dl];
+        try {
+          var rawValue = dc.fn();
+          if (rawValue != null) {
+            // First: direct extraction without plan matching (for user-selected cells)
+            var exactMeta = extractAttachmentMetaFromExactCellLinkRuns(rawValue, result.cellText, "text-link-runs:" + dc.label);
+            if (exactMeta && exactMeta.subFileId) {
+              result.isAttachment = true;
+              result.attachmentMeta = exactMeta;
+              result.detectSource = exactMeta.source;
+              result.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: true, id: exactMeta.subFileId, source: "exact-cell-link-run" });
+              return result;
+            }
+            // Fallback: plan-matched extraction (for plan-based workflows)
+            var linkMeta = scanLinkRunValueForAttachmentMeta(rawValue, { rowIndex: rowIndex, colIndex: colIndex }, "direct-" + dc.label);
+            if (linkMeta && linkMeta.id) {
+              result.isAttachment = true;
+              result.attachmentMeta = {
+                subFileId: linkMeta.id,
+                fileSize: linkMeta.fileSize || "",
+                aType: linkMeta.aType || "pdf",
+                fileName: linkMeta.fileName || "",
+                text: linkMeta.text || linkMeta.matchedText || "",
+                displayName: result.cellText.replace(/^📄/, ""),
+              };
+              result.detectSource = "text-link-runs:" + dc.label;
+              result.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: true, id: linkMeta.id, source: "plan-matched" });
+              return result;
+            }
+            result.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: false, reason: "no-id-in-result" });
+          } else {
+            result.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: false, reason: "null-result" });
+          }
+        } catch (e) {
+          result.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: false, reason: "error", error: e.message || String(e) });
+        }
+      }
+    } else {
+      result.detectAttempts.push({ path: "text-link-runs", ok: false, reason: "no-active-sheet" });
+    }
+
+    // Step 3: Try range query (slower — do last)
+    try {
+      var range = createWpsRange(rowIndex, rowIndex, colIndex, colIndex);
+      if (range) {
+        var optionVariants = [
+          { includeTextLinkRuns: true, includeRuns: true },
+          { needTextLinkRuns: true, needRuns: true },
+          { withTextLinkRuns: true, withRuns: true },
+          {},
+        ];
+        var found = false;
+        for (var ov = 0; ov < optionVariants.length && !found; ov++) {
+          try {
+            var rv = await queryRangeValuesViaUil(range, optionVariants[ov]);
+            if (rv) {
+              var rqMeta = scanObjectForAttachmentMeta(rv, 8);
+              if (rqMeta && rqMeta.id) {
+                result.isAttachment = true;
+                result.attachmentMeta = {
+                  subFileId: rqMeta.id,
+                  fileSize: rqMeta.fileSize || "",
+                  aType: rqMeta.aType || "pdf",
+                  fileName: rqMeta.fileName || "",
+                  text: rqMeta.text || "",
+                  displayName: result.cellText.replace(/^📄/, ""),
+                };
+                result.detectSource = "range-query";
+                result.detectAttempts.push({ path: "range-query", ok: true, id: rqMeta.id });
+                found = true;
+              }
+            }
+          } catch (e2) {
+            // individual query variant failure is non-fatal
+          }
+        }
+        if (!found) {
+          result.detectAttempts.push({ path: "range-query", ok: false, reason: "no-id" });
+        }
+      } else {
+        result.detectAttempts.push({ path: "range-query", ok: false, reason: "no-range-object" });
+      }
+    } catch (e) {
+      result.detectAttempts.push({ path: "range-query", ok: false, reason: "error", error: e.message || String(e) });
+    }
+
+    if (result.isAttachment) return result;
+
+    // Step 4: Check cell text — if it looks like an attachment display (starts with 📄)
+    // but has no id, mark as non-attachment with a specific reason
+    if (result.cellText && /📄/.test(result.cellText)) {
+      result.detectAttempts.push({
+        path: "cell-text-heuristic",
+        ok: false,
+        reason: "looks-like-attachment-but-no-link-id",
+      });
+    }
+
+    // Not an attachment
+    result.isAttachment = false;
+    return result;
+  }
+
+  // ===== Plan-Attachment-Map fallback for ID resolution =====
+
+  function normalizeCellTextForMatching(text) {
+    return normalizeAttachmentDisplayName(text)
+      .replace(/^📄/u, "")
+      .replace(/\.(pdf|docx?|xlsx?|xls|png|jpe?g)$/i, "")
+      .replace(/\s+/g, "")
+      .toLowerCase();
+  }
+
+  function buildResolveContext() {
+    return {
+      plan: null,
+      attachmentMap: null,
+      normalizedPlanItems: null,
+      _planLoaded: false,
+      _mapLoaded: false,
+    };
+  }
+
+  async function ensureResolveContext(ctx) {
+    if (!ctx._planLoaded) {
+      try {
+        ctx.plan = await buildPlanDirectlyFromPage();
+        ctx._planLoaded = true;
+        // Build normalized index for plan items
+        ctx.normalizedPlanItems = (ctx.plan || []).map(function (item) {
+          return {
+            item: item,
+            normSource: normalizeCellTextForMatching(item.sourceText || ""),
+            normTarget: normalizeCellTextForMatching(item.targetBase || ""),
+          };
+        });
+      } catch (_) {
+        ctx.plan = [];
+        ctx.normalizedPlanItems = [];
+        ctx._planLoaded = true;
+      }
+    }
+
+    if (!ctx._mapLoaded) {
+      try {
+        ctx.attachmentMap = window.WPSBatch && window.WPSBatch.lastAutoAttachmentMap;
+        if (!ctx.attachmentMap) {
+          ctx.attachmentMap = loadPersistedAttachmentMap();
+        }
+        if (!ctx.attachmentMap) {
+          ctx.attachmentMap = await makeAutoAttachmentMap({ allowSelectionMutation: false });
+        }
+        ctx._mapLoaded = true;
+      } catch (_) {
+        ctx.attachmentMap = null;
+        ctx._mapLoaded = true;
+      }
+    }
+
+    return ctx;
+  }
+
+  function resolveSelectedCellAttachmentByPlan(rowIndex, colIndex, cellText, ctx) {
+    if (!ctx || !ctx.plan || !ctx.plan.length) {
+      return { ok: false, reason: "no-plan" };
+    }
+
+    var normCell = normalizeCellTextForMatching(cellText || "");
+
+    // Priority 1: exact rowIndex + colIndex match
+    for (var i = 0; i < ctx.plan.length; i++) {
+      var item = ctx.plan[i];
+      var itemRi = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
+      var itemCi = Number.isFinite(item.colIndex) ? item.colIndex : -1;
+      if (itemRi === rowIndex && itemCi === colIndex) {
+        return resolveFromPlanItem(item, ctx, "row-col-exact");
+      }
+    }
+
+    // Priority 2: rowIndex matches (use first match in the column)
+    for (var j = 0; j < ctx.plan.length; j++) {
+      var item2 = ctx.plan[j];
+      var itemRi2 = Number.isFinite(item2.rowIndex) ? item2.rowIndex : Number(item2.row) - 1;
+      if (itemRi2 === rowIndex) {
+        return resolveFromPlanItem(item2, ctx, "row-match");
+      }
+    }
+
+    // Priority 3: normalized sourceText match
+    for (var k = 0; k < (ctx.normalizedPlanItems || []).length; k++) {
+      var npi = ctx.normalizedPlanItems[k];
+      if (npi.normSource && npi.normSource === normCell) {
+        return resolveFromPlanItem(npi.item, ctx, "source-text-match");
+      }
+    }
+
+    // Priority 4: normalized targetBase match
+    for (var l = 0; l < (ctx.normalizedPlanItems || []).length; l++) {
+      var npi2 = ctx.normalizedPlanItems[l];
+      if (npi2.normTarget && npi2.normTarget === normCell) {
+        return resolveFromPlanItem(npi2.item, ctx, "target-match");
+      }
+    }
+
+    // Priority 5: partial match — cell text contains source/target or vice versa
+    if (normCell) {
+      for (var m = 0; m < (ctx.normalizedPlanItems || []).length; m++) {
+        var npi3 = ctx.normalizedPlanItems[m];
+        if ((npi3.normSource && (npi3.normSource.indexOf(normCell) >= 0 || normCell.indexOf(npi3.normSource) >= 0)) ||
+            (npi3.normTarget && (npi3.normTarget.indexOf(normCell) >= 0 || normCell.indexOf(npi3.normTarget) >= 0))) {
+          return resolveFromPlanItem(npi3.item, ctx, "partial-match");
+        }
+      }
+    }
+
+    return { ok: false, reason: "no-plan-item-matched" };
+  }
+
+  function resolveFromPlanItem(item, ctx, matchSource) {
+    var map = ctx.attachmentMap;
+    if (!map) return { ok: false, reason: "no-attachment-map" };
+
+    var id =
+      (map[item.type] && map[item.type][item.key]) ||
+      (map.flat && map.flat[item.type + ":" + item.key]) ||
+      (map.flat && map.flat[item.sourceText]) ||
+      (map.flat && map.flat[item.targetBase]);
+
+    if (!id) {
+      return { ok: false, reason: "no-id-in-map", type: item.type, key: item.key };
+    }
+
+    return {
+      ok: true,
+      subFileId: typeof id === "string" ? id : (id && id.id),
+      type: item.type,
+      key: item.key,
+      sourceText: item.sourceText,
+      targetBase: item.targetBase,
+      matchSource: "plan-attachment-map:" + matchSource,
+      planItem: item,
+    };
+  }
+
+  // ===== Main Cell Inspection (sync best-effort) =====
+
+  function inspectSelectedAttachmentCells(options) {
+    options = options || {};
+    var rangeResult = getSelectedRange(options);
+    if (!rangeResult.ok && !Number.isFinite(rangeResult.rowFrom)) {
+      return {
+        ok: false,
+        error: rangeResult.error || "无法读取当前选区",
+        range: rangeResult,
+        cells: [],
+      };
+    }
+
+    var rowFrom = Number(rangeResult.rowFrom);
+    var rowTo = Number(rangeResult.rowTo);
+    var colFrom = Number(rangeResult.colFrom);
+    var colTo = Number(rangeResult.colTo);
+
+    var rowCount = rowTo - rowFrom + 1;
+    var colCount = colTo - colFrom + 1;
+    var totalCells = rowCount * colCount;
+    // Safety cap
+    if (totalCells > 2000) {
+      return {
+        ok: false,
+        error: "选区过大（" + totalCells + " 个单元格），请缩小选区（最多 2000 个单元格）",
+        range: { rowFrom: rowFrom, rowTo: rowTo, colFrom: colFrom, colTo: colTo },
+        cells: [],
+      };
+    }
+
+    // IMPORTANT: detectAttachmentMetaAtCell is async, but inspectSelectedAttachmentCells is sync.
+    // We can't await inside a loop. Instead, we'll do synchronous "best-effort" detection first,
+    // and return a promise that the caller can await. But since the caller (previewRenameSelectedAttachments)
+    // is async, we restructure: the expensive async detection happens later.
+    //
+    // For now, we do sync detection (cell-object only) fast, then mark cells that need
+    // async detection (range-query). The actual async work is done by the caller.
+
+    var cells = [];
+    var nonAttachmentCount = 0;
+    var attachmentCount = 0;
+    var errorCount = 0;
+    var pendingAsyncCells = []; // cells that need async range-query detection
+
+    for (var r = rowFrom; r <= rowTo; r++) {
+      for (var c = colFrom; c <= colTo; c++) {
+        var entry = {
+          rowIndex: r,
+          colIndex: c,
+          rowNumber: r + 1,
+          colName: columnNameFromIndex(c),
+          cellText: "",
+          isAttachment: false,
+          attachmentMeta: null,
+          detectSource: "",
+          detectAttempts: [],
+          error: null,
+        };
+
+        // Read cell text
+        try {
+          entry.cellText = getWpsCellText(r, c);
+        } catch (e) {
+          entry.error = "读取单元格文本失败: " + (e.message || String(e));
+          entry.detectAttempts.push({ path: "cell-text", ok: false, error: e.message });
+          errorCount++;
+          cells.push(entry);
+          continue;
+        }
+
+        // Try cell object (sync — fast path)
+        var cellObj = null;
+        try {
+          cellObj = getCellObjectAt(r, c);
+          if (cellObj) {
+            var cellMeta = scanObjectForAttachmentMeta(cellObj, 8);
+            if (cellMeta && cellMeta.id) {
+              entry.isAttachment = true;
+              entry.attachmentMeta = {
+                subFileId: cellMeta.id,
+                fileSize: cellMeta.fileSize || "",
+                aType: cellMeta.aType || "pdf",
+                fileName: cellMeta.fileName || "",
+                text: cellMeta.text || "",
+                displayName: entry.cellText.replace(/^📄/, ""),
+              };
+              entry.detectSource = "cell-object";
+              entry.detectAttempts.push({ path: "cell-object", ok: true, id: cellMeta.id });
+              attachmentCount++;
+              cells.push(entry);
+              continue;
+            }
+            entry.detectAttempts.push({ path: "cell-object", ok: false, reason: "no-id" });
+          } else {
+            entry.detectAttempts.push({ path: "cell-object", ok: false, reason: "no-cell-obj" });
+          }
+        } catch (e) {
+          entry.detectAttempts.push({ path: "cell-object", ok: false, reason: "error", error: e.message || String(e) });
+        }
+
+        // Try hyperlink providers (sync — try direct calls)
+        var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
+        var foundViaLink = false;
+        if (sheet) {
+          var directCalls = [
+            {
+              label: "getTextLinkRuns",
+              fn: function () { return sheet.getTextLinkRuns && sheet.getTextLinkRuns(r, c); },
+            },
+            {
+              label: "getTextLinkRunsByCell",
+              fn: function () { return sheet.getTextLinkRunsByCell && sheet.getTextLinkRunsByCell(r, c, cellObj); },
+            },
+            {
+              label: "getHyperlink",
+              fn: function () { return sheet.getHyperlink && sheet.getHyperlink(r, c); },
+            },
+            {
+              label: "getCoreHyperlinks.getCellLinkRuns",
+              fn: function () {
+                if (!sheet.getCoreHyperlinks) return null;
+                var core = sheet.getCoreHyperlinks();
+                return core && core.getCellLinkRuns && core.getCellLinkRuns(r, c);
+              },
+            },
+            {
+              label: "getCoreHyperlinks.getHyperlink",
+              fn: function () {
+                if (!sheet.getCoreHyperlinks) return null;
+                var core = sheet.getCoreHyperlinks();
+                return core && core.getHyperlink && core.getHyperlink(r, c);
+              },
+            },
+          ];
+
+          for (var dl = 0; dl < directCalls.length; dl++) {
+            var dc = directCalls[dl];
+            try {
+              var rawValue = dc.fn();
+              if (rawValue != null) {
+                // First: direct extraction without plan matching (for user-selected cells)
+                var exactMeta = extractAttachmentMetaFromExactCellLinkRuns(rawValue, entry.cellText, "text-link-runs:" + dc.label);
+                if (exactMeta && exactMeta.subFileId) {
+                  entry.isAttachment = true;
+                  entry.attachmentMeta = exactMeta;
+                  entry.detectSource = exactMeta.source;
+                  entry.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: true, id: exactMeta.subFileId, source: "exact-cell-link-run" });
+                  attachmentCount++;
+                  foundViaLink = true;
+                  break;
+                }
+                // Fallback: plan-matched extraction
+                var linkMeta = scanLinkRunValueForAttachmentMeta(
+                  rawValue,
+                  { rowIndex: r, colIndex: c },
+                  "direct-" + dc.label
+                );
+                if (linkMeta && linkMeta.id) {
+                  entry.isAttachment = true;
+                  entry.attachmentMeta = {
+                    subFileId: linkMeta.id,
+                    fileSize: linkMeta.fileSize || "",
+                    aType: linkMeta.aType || "pdf",
+                    fileName: linkMeta.fileName || "",
+                    text: linkMeta.text || linkMeta.matchedText || "",
+                    displayName: entry.cellText.replace(/^📄/, ""),
+                  };
+                  entry.detectSource = "text-link-runs:" + dc.label;
+                  entry.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: true, id: linkMeta.id, source: "plan-matched" });
+                  attachmentCount++;
+                  foundViaLink = true;
+                  break;
+                }
+                entry.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: false, reason: "no-id-in-result" });
+              } else {
+                entry.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: false, reason: "null-result" });
+              }
+            } catch (e) {
+              entry.detectAttempts.push({ path: "text-link-runs", method: dc.label, ok: false, reason: "error", error: e.message || String(e) });
+            }
+          }
+        } else {
+          entry.detectAttempts.push({ path: "text-link-runs", ok: false, reason: "no-active-sheet" });
+        }
+
+        if (foundViaLink) {
+          cells.push(entry);
+          continue;
+        }
+
+        // If not found yet, mark for async range-query
+        if (!entry.isAttachment) {
+          // Check cell text heuristic
+          if (entry.cellText && /📄/.test(entry.cellText)) {
+            entry.detectAttempts.push({ path: "cell-text-heuristic", ok: false, reason: "looks-like-attachment-but-no-link-id" });
+          }
+          pendingAsyncCells.push({ cellEntry: entry, cellObj: cellObj });
+          nonAttachmentCount++;
+        }
+
+        cells.push(entry);
+      }
+    }
+
+    var result = {
+      ok: true,
+      range: { rowFrom: rowFrom, rowTo: rowTo, colFrom: colFrom, colTo: colTo, method: rangeResult.method },
+      cells: cells,
+      summary: {
+        totalCells: totalCells,
+        attachmentCount: attachmentCount,
+        nonAttachmentCount: nonAttachmentCount,
+        errorCount: errorCount,
+      },
+      _pendingAsyncCells: pendingAsyncCells,
+    };
+
+    return result;
+  }
+
+  // Async variant: re-checks cells via range-query
+  async function inspectSelectedAttachmentCellsAsync(options) {
+    var result = inspectSelectedAttachmentCells(options);
+    if (!result.ok) return result;
+
+    var pending = result._pendingAsyncCells || [];
+    if (!pending.length) {
+      delete result._pendingAsyncCells;
+      return result;
+    }
+
+    for (var pa = 0; pa < pending.length; pa++) {
+      var pc = pending[pa];
+      var entry = pc.cellEntry;
+      var rowIndex = entry.rowIndex;
+      var colIndex = entry.colIndex;
+
+      // Try range query
+      try {
+        var range = createWpsRange(rowIndex, rowIndex, colIndex, colIndex);
+        if (range) {
+          var optionVariants = [
+            { includeTextLinkRuns: true, includeRuns: true },
+            { needTextLinkRuns: true, needRuns: true },
+          ];
+          var foundViaRq = false;
+          for (var ov = 0; ov < optionVariants.length && !foundViaRq; ov++) {
+            try {
+              var rv = await queryRangeValuesViaUil(range, optionVariants[ov]);
+              if (rv) {
+                var rqMeta = scanObjectForAttachmentMeta(rv, 8);
+                if (rqMeta && rqMeta.id) {
+                  entry.isAttachment = true;
+                  entry.attachmentMeta = {
+                    subFileId: rqMeta.id,
+                    fileSize: rqMeta.fileSize || "",
+                    aType: rqMeta.aType || "pdf",
+                    fileName: rqMeta.fileName || "",
+                    text: rqMeta.text || "",
+                    displayName: entry.cellText.replace(/^📄/, ""),
+                  };
+                  entry.detectSource = "range-query";
+                  entry.detectAttempts.push({ path: "range-query", ok: true, id: rqMeta.id });
+                  result.summary.attachmentCount++;
+                  result.summary.nonAttachmentCount--;
+                  foundViaRq = true;
+                }
+              }
+            } catch (e2) {}
+          }
+          if (!foundViaRq) {
+            entry.detectAttempts.push({ path: "range-query", ok: false, reason: "no-id" });
+          }
+        } else {
+          entry.detectAttempts.push({ path: "range-query", ok: false, reason: "no-range-object" });
+        }
+      } catch (e) {
+        entry.detectAttempts.push({ path: "range-query", ok: false, reason: "error", error: e.message || String(e) });
+      }
+    }
+
+    // ===== Plan-Attachment-Map fallback =====
+    // For cells that still have no ID but look like attachments, try plan resolution
+    var needsPlanCtx = false;
+    for (var pb = 0; pb < result.cells.length; pb++) {
+      var entry2 = result.cells[pb];
+      if (!entry2.isAttachment && entry2.cellText && /📄/.test(entry2.cellText)) {
+        needsPlanCtx = true;
+        break;
+      }
+    }
+
+    if (needsPlanCtx) {
+      var planCtx = buildResolveContext();
+      try {
+        await ensureResolveContext(planCtx);
+      } catch (_) {}
+
+      for (var pc2 = 0; pc2 < result.cells.length; pc2++) {
+        var entry3 = result.cells[pc2];
+        if (entry3.isAttachment) continue;
+        if (!entry3.cellText || !/📄/.test(entry3.cellText)) continue;
+
+        var planResult = resolveSelectedCellAttachmentByPlan(
+          entry3.rowIndex, entry3.colIndex, entry3.cellText, planCtx
+        );
+
+        if (planResult.ok) {
+          entry3.isAttachment = true;
+          entry3.attachmentMeta = {
+            subFileId: planResult.subFileId,
+            fileSize: "",
+            aType: "pdf",
+            fileName: (entry3.cellText.replace(/^📄/, "") || planResult.targetBase || "") + ".pdf",
+            text: planResult.sourceText || entry3.cellText,
+            displayName: entry3.cellText.replace(/^📄/, ""),
+          };
+          entry3.detectSource = "plan-attachment-map";
+          entry3.detectAttempts.push({ path: "plan-attachment-map", ok: true, matchSource: planResult.matchSource, id: planResult.subFileId });
+          result.summary.attachmentCount++;
+          result.summary.nonAttachmentCount--;
+        } else {
+          entry3.detectAttempts.push({ path: "plan-attachment-map", ok: false, reason: planResult.reason || "unknown" });
+        }
+      }
+    }
+
+    delete result._pendingAsyncCells;
+    return result;
+  }
+
+  // ===== Template-based Rename Helpers =====
+
+  function getColumnsFromLastScan() {
+    var kernel = window.WPSBatch && window.WPSBatch.kernel;
+    var sr = kernel && kernel.getLastScanResult();
+    return (sr && sr.columns) || [];
+  }
+
+  function parseRenameTemplate(template, columns) {
+    if (!template || typeof template !== "string" || !template.trim()) {
+      return { ok: false, error: "模板为空" };
+    }
+    var pattern = /\{([^}]+)\}/g;
+    var parts = [];
+    var match;
+    var lastIndex = 0;
+    var referencedColumns = [];
+    var colMap = {};
+    for (var c = 0; c < columns.length; c++) {
+      colMap[columns[c].name] = columns[c];
+    }
+
+    while ((match = pattern.exec(template)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push({ type: "text", value: template.slice(lastIndex, match.index) });
+      }
+      var colName = match[1].trim();
+      var col = colMap[colName];
+      if (!col) {
+        return { ok: false, error: "模板引用了不存在的列: \"" + colName + "\"。可用列: " + columns.map(function (c2) { return c2.name; }).join("、") };
+      }
+      parts.push({ type: "column", columnIndex: col.index, columnName: col.name, placeholder: match[0] });
+      if (referencedColumns.indexOf(col.index) < 0) {
+        referencedColumns.push(col.index);
+      }
+      lastIndex = pattern.lastIndex;
+    }
+
+    if (lastIndex < template.length) {
+      parts.push({ type: "text", value: template.slice(lastIndex) });
+    }
+
+    var hasPlaceholder = false;
+    for (var p = 0; p < parts.length; p++) {
+      if (parts[p].type === "column") { hasPlaceholder = true; break; }
+    }
+    if (!hasPlaceholder) {
+      return { ok: false, error: "模板中没有任何 {列名} 占位符" };
+    }
+
+    return { ok: true, parts: parts, referencedColumns: referencedColumns };
+  }
+
+  function renderRenameTemplateForRow(template, rowIndex, columns) {
+    var parseResult = parseRenameTemplate(template, columns);
+    if (!parseResult.ok) return parseResult;
+
+    var result = "";
+    var missingColumns = [];
+
+    for (var i = 0; i < parseResult.parts.length; i++) {
+      var part = parseResult.parts[i];
+      if (part.type === "text") {
+        result += part.value;
+      } else {
+        var value = getWpsCellText(rowIndex, part.columnIndex);
+        if (!value) {
+          missingColumns.push(part.columnName);
+        }
+        result += value || "";
+      }
+    }
+
+    return { ok: true, result: result, missingColumns: missingColumns };
+  }
+
+  function buildTemplateFromSelectedColumns(selectedColumnIndexes, columns) {
+    if (!selectedColumnIndexes.length) return "";
+    var indexMap = {};
+    for (var i = 0; i < columns.length; i++) {
+      indexMap[columns[i].index] = columns[i].name;
+    }
+    var names = [];
+    for (var j = 0; j < selectedColumnIndexes.length; j++) {
+      var n = indexMap[selectedColumnIndexes[j]];
+      if (n) names.push("{" + n + "}");
+    }
+    return names.join("-");
+  }
+
+  async function previewRenameSelectedAttachments(rule) {
+    var ruleObj = rule || {};
+    var template = ruleObj.template || "";
+    var columnIndexes = ruleObj.columnIndexes || [];
+    var separator = ruleObj.separator != null ? ruleObj.separator : "-";
+    var selectedColumns = ruleObj.selectedColumns || [];
+    var rangeOverride = ruleObj.rangeOverride || "";
+
+    // Use template if provided
+    var useTemplate = !!template;
+    var columns = getColumnsFromLastScan();
+
+    if (useTemplate) {
+      var parseCheck = parseRenameTemplate(template, columns);
+      if (!parseCheck.ok) {
+        return { ok: false, error: parseCheck.error, preview: [] };
+      }
+      // Derive columnIndexes from template for compatibility
+      columnIndexes = parseCheck.referencedColumns;
+    } else if (!columnIndexes.length && !selectedColumns.length) {
+      return {
+        ok: false,
+        error: "请至少选择一个列作为命名来源，或填写自定义模板",
+        preview: [],
+      };
+    }
+
+    // If selectedColumns provided but no template, build template
+    if (!useTemplate && selectedColumns.length && !columnIndexes.length) {
+      columnIndexes = selectedColumns.map(function (s) { return s.index; });
+      template = buildTemplateFromSelectedColumns(columnIndexes, columns);
+      useTemplate = true;
+    } else if (!useTemplate && selectedColumns.length) {
+      template = buildTemplateFromSelectedColumns(columnIndexes, columns);
+      useTemplate = true;
+    }
+
+    var inspectResult = await inspectSelectedAttachmentCellsAsync({ rangeOverride: rangeOverride });
+    if (!inspectResult.ok) {
+      return { ok: false, error: inspectResult.error, preview: [], range: inspectResult.range };
+    }
+
+    var attachmentCells = [];
+    for (var i = 0; i < inspectResult.cells.length; i++) {
+      if (inspectResult.cells[i].isAttachment) attachmentCells.push(inspectResult.cells[i]);
+    }
+
+    if (!attachmentCells.length) {
+      // Check if cells look like attachments but all detection failed
+      var hasAttachmentLike = false;
+      for (var hl = 0; hl < inspectResult.cells.length; hl++) {
+        if (inspectResult.cells[hl].cellText && /📄/.test(inspectResult.cells[hl].cellText)) {
+          hasAttachmentLike = true; break;
+        }
+      }
+      // Build detection summary for first few cells
+      var detectSamples = [];
+      for (var si = 0; si < Math.min(inspectResult.cells.length, 5); si++) {
+        var sc = inspectResult.cells[si];
+        if (sc) {
+          var sources = [];
+          for (var aj = 0; aj < (sc.detectAttempts || []).length; aj++) {
+            var da = sc.detectAttempts[aj];
+            if (da.ok) sources.push(da.path + "=ok");
+            else sources.push(da.path + "=" + (da.reason || "fail"));
+          }
+          var cellTextShort = (sc.cellText || "(空)").slice(0, 30);
+          detectSamples.push(sc.colName + (sc.rowNumber || (sc.rowIndex + 1)) + " 文本=" + cellTextShort + " [" + (sources.length ? sources.join(",") : "无检测结果") + "]");
+        }
+      }
+      var diagMsg = "已检查 " + inspectResult.cells.length + " 个单元格";
+      if (detectSamples.length) diagMsg += "，示例：" + detectSamples.join("; ");
+
+      var errorMsg;
+      if (hasAttachmentLike) {
+        errorMsg = "选区中有附件显示文本，但无法反查附件 ID。请先运行匹配附件或自动附件映射，再重试。" + diagMsg;
+      } else {
+        errorMsg = "当前范围没有识别到可改名附件。" + diagMsg;
+      }
+      return {
+        ok: false,
+        error: errorMsg,
+        preview: [],
+        range: inspectResult.range,
+        detectSamples: detectSamples,
+        hasAttachmentLike: hasAttachmentLike,
+      };
+    }
+
+    if (inspectResult.summary.nonAttachmentCount > 0) {
+      var nonAttachSamples = [];
+      for (var ns = 0; ns < inspectResult.cells.length && nonAttachSamples.length < 3; ns++) {
+        var nc = inspectResult.cells[ns];
+        if (nc && !nc.isAttachment) {
+          nonAttachSamples.push(nc.colName + (nc.rowNumber || (nc.rowIndex + 1)));
+        }
+      }
+      return {
+        ok: false,
+        error: "范围中有 " + inspectResult.summary.nonAttachmentCount + " 个非附件单元格（如 " + nonAttachSamples.join(",") + "），请只框选附件单元格",
+        preview: [],
+        range: inspectResult.range,
+        nonAttachmentCount: inspectResult.summary.nonAttachmentCount,
+      };
+    }
+
+    // Generate sample from first attachment cell
+    var sample = null;
+    if (useTemplate && attachmentCells.length > 0) {
+      var sampleRowIndex = attachmentCells[0].rowIndex;
+      var sampleRender = renderRenameTemplateForRow(template, sampleRowIndex, columns);
+      if (sampleRender.ok) {
+        sample = sampleRender.result;
+      }
+    }
+
+    var previewItems = [];
+    var hasError = false;
+
+    for (var j = 0; j < attachmentCells.length; j++) {
+      var cell = attachmentCells[j];
+      var rowIndex = cell.rowIndex;
+      var newName = "";
+      var missingColumns = [];
+      var status = "ok";
+
+      if (useTemplate) {
+        var renderResult = renderRenameTemplateForRow(template, rowIndex, columns);
+        if (!renderResult.ok) {
+          status = "error-template";
+          missingColumns = [];
+          hasError = true;
+          newName = "[模板错误: " + renderResult.error + "]";
+        } else {
+          newName = renderResult.result;
+          missingColumns = renderResult.missingColumns || [];
+          if (missingColumns.length > 0) {
+            status = "error-empty-column";
+            hasError = true;
+          }
+        }
+      } else {
+        // Legacy: columnIndexes + separator
+        var parts = [];
+        for (var k = 0; k < columnIndexes.length; k++) {
+          var ci = columnIndexes[k];
+          var value = getWpsCellText(rowIndex, ci);
+          if (!value) {
+            // Resolve column name for legacy path
+            var colName = "";
+            for (var m = 0; m < columns.length; m++) {
+              if (columns[m].index === ci) { colName = columns[m].name; break; }
+            }
+            missingColumns.push(colName || ("列" + ci));
+          }
+          parts.push(value || "");
+        }
+        newName = parts.join(separator);
+        if (missingColumns.length > 0) {
+          status = "error-empty-column";
+          hasError = true;
+        }
+      }
+
+      previewItems.push({
+        rowIndex: rowIndex,
+        rowNumber: rowIndex + 1,
+        colIndex: cell.colIndex,
+        originalDisplayName: cell.attachmentMeta ? cell.attachmentMeta.displayName : "",
+        originalText: cell.cellText,
+        newDisplayName: newName,
+        subFileId: cell.attachmentMeta ? cell.attachmentMeta.subFileId : "",
+        missingColumns: missingColumns,
+        status: status,
+      });
+    }
+
+    return {
+      ok: true,
+      template: template,
+      rule: { columnIndexes: columnIndexes, separator: separator, template: template },
+      preview: previewItems,
+      sample: sample,
+      summary: {
+        total: previewItems.length,
+        okCount: previewItems.filter(function (p) { return p.status === "ok"; }).length,
+        errorCount: previewItems.filter(function (p) { return p.status !== "ok"; }).length,
+      },
+      hasError: hasError,
+    };
+  }
+
+  async function renameSelectedAttachmentCells(rule) {
+    var ruleObj = rule || {};
+
+    // Must await — previewRenameSelectedAttachments is async (uses inspectSelectedAttachmentCellsAsync)
+    var previewResult = await previewRenameSelectedAttachments(ruleObj);
+    if (!previewResult.ok) {
+      return { ok: false, error: previewResult.error, results: [], preview: previewResult };
+    }
+
+    if (previewResult.hasError) {
+      return {
+        ok: false,
+        error: "预览中存在空列值错误（" + previewResult.summary.errorCount + " 个），无法执行。请调整选区或列选择",
+        results: [],
+        preview: previewResult,
+      };
+    }
+
+    var results = [];
+    var sheetMeta = getSheetCommandMeta();
+
+    for (var i = 0; i < previewResult.preview.length; i++) {
+      var item = previewResult.preview[i];
+
+      // Use metadata from preview when available
+      var subFileId = item.subFileId || "";
+      var ext = "pdf";
+      var fileSize = "";
+
+      // If preview didn't have metadata, try to detect it now
+      if (!subFileId) {
+        try {
+          var detectResult = await detectAttachmentMetaAtCell(item.rowIndex, item.colIndex);
+          if (detectResult && detectResult.isAttachment && detectResult.attachmentMeta) {
+            subFileId = detectResult.attachmentMeta.subFileId || "";
+            ext = detectResult.attachmentMeta.aType || "pdf";
+            fileSize = detectResult.attachmentMeta.fileSize || "";
+          }
+        } catch (_) {}
+      }
+
+      if (!subFileId) {
+        results.push({
+          rowIndex: item.rowIndex,
+          rowNumber: item.rowNumber,
+          colIndex: item.colIndex,
+          originalDisplayName: item.originalDisplayName,
+          newDisplayName: item.newDisplayName,
+          status: "error",
+          error: "无法获取附件 subFileId",
+        });
+        continue;
+      }
+
+      var displayName = item.newDisplayName;
+      var formula = "📄" + displayName;
+      var filename = displayName + "." + ext;
+      var address = "kw:annex?aType=" + encodeURIComponent(ext) +
+        "&oId=" + encodeURIComponent(subFileId) +
+        "&fileName=" + encodeURIComponent(filename) +
+        (fileSize ? "&fileSize=" + encodeURIComponent(fileSize) : "");
+
+      var param = {
+        sheetStId: Number(sheetMeta.sheetStId),
+        sheetIdx: Number(sheetMeta.sheetIdx),
+        sheetName: sheetMeta.sheetName,
+        rowFrom: item.rowIndex,
+        rowTo: item.rowIndex,
+        colFrom: item.colIndex,
+        colTo: item.colIndex,
+        independentViewId: -1,
+        independentViewInfo: {
+          viewId: -1,
+          userId: sheetMeta.userId,
+          viewName: "",
+          isTemp: false,
+          sharedChanged: false,
+          forceExit: false,
+          connId: sheetMeta.connId,
+        },
+        enableDynamicArray: true,
+        formula: formula,
+        textLinkRuns: [{ pos: 0, length: formula.length, address: address, linkRunsType: "LRTMention" }],
+        changeFlags: { formula: true },
+        refSheetStId: Number(sheetMeta.sheetStId),
+        refSheetIdx: Number(sheetMeta.sheetIdx),
+        refRow: item.rowIndex,
+        refCol: item.colIndex,
+        refStyle: sheetMeta.refStyle,
+        isForceAsText4Decimal: false,
+      };
+
+      try {
+        var runs = getExistingCellRuns(item.rowIndex, item.colIndex);
+        if (runs.length) {
+          runs[0] = Object.assign({}, runs[0], { begin: 0 });
+          param.runs = runs;
+          param.changeFlags.runs = true;
+        }
+      } catch (_) {}
+
+      try {
+        var ok = window.APP.execCommand("range.setFormula", param);
+        results.push({
+          rowIndex: item.rowIndex,
+          rowNumber: item.rowNumber,
+          colIndex: item.colIndex,
+          originalDisplayName: item.originalDisplayName,
+          newDisplayName: item.newDisplayName,
+          status: ok ? "renamed" : "rejected",
+          error: ok ? null : "execCommand 返回 falsy",
+        });
+      } catch (e) {
+        results.push({
+          rowIndex: item.rowIndex,
+          rowNumber: item.rowNumber,
+          colIndex: item.colIndex,
+          originalDisplayName: item.originalDisplayName,
+          newDisplayName: item.newDisplayName,
+          status: "error",
+          error: e.message || String(e),
+        });
+      }
+    }
+
+    var successCount = results.filter(function (r) { return r.status === "renamed"; }).length;
+    var failCount = results.filter(function (r) { return r.status !== "renamed"; }).length;
+
+    log("批量改名完成：成功 " + successCount + " 个，失败 " + failCount + " 个");
+
+    return {
+      ok: true,
+      results: results,
+      summary: {
+        total: results.length,
+        successCount: successCount,
+        failCount: failCount,
+      },
+    };
+  }
+
   function createWpsBatchKernel() {
     var lastScanResult = null;
     var lastMatchResult = null;
@@ -4499,10 +6925,22 @@
       var tableResult = window.WPSBatch.lastTableReadResult || {};
       var rows = tableResult.rows || [];
       var headers = rows.length > 0 ? rows[0] : [];
+      var columns = headers.map(function (h, ci) {
+        var values = [];
+        for (var ri = 1; ri < rows.length; ri++) {
+          var rowArr = rows[ri];
+          var val = rowArr && rowArr[ci] ? cleanText(rowArr[ci]) : "";
+          if (val) {
+            values.push({ rowIndex: ri - 1, rowNumber: ri + 1, value: val });
+          }
+        }
+        return { index: ci, name: cleanText(h), values: values };
+      });
       lastScanResult = {
         plan: plan,
         source: tableResult.source || "unknown",
         rows: rows,
+        columns: columns,
         records: tableResult.records || [],
         planCount: plan.length,
         rowCount: rows.length,
@@ -4772,6 +7210,13 @@
     kernel.getLastMatchResult = function () { return lastMatchResult; };
     kernel.getLastExecuteResult = function () { return lastExecuteResult; };
 
+    kernel.getSelectedRange = getSelectedRange;
+    kernel.inspectSelectedAttachmentCells = inspectSelectedAttachmentCells;
+    kernel.previewRenameSelectedAttachments = previewRenameSelectedAttachments;
+    kernel.renameSelectedAttachmentCells = renameSelectedAttachmentCells;
+    kernel.diagnoseSelectionApis = diagnoseSelectionApis;
+    kernel.diagnoseSelectedAttachmentCells = diagnoseSelectedAttachmentCells;
+
     return kernel;
   }
 
@@ -4788,6 +7233,13 @@
     selfTest: selfTest,
     checkPageEnvironment: checkPageEnvironment,
     resetKernel: function () { return wpsBatchKernel.reset(); },
+    // Selection-based APIs
+    getSelectedRange: function (options) { return wpsBatchKernel.getSelectedRange(options); },
+    inspectSelectedAttachmentCells: function (options) { return wpsBatchKernel.inspectSelectedAttachmentCells(options); },
+    previewRenameSelectedAttachments: function (rule) { return wpsBatchKernel.previewRenameSelectedAttachments(rule); },
+    renameSelectedAttachmentCells: function (rule) { return wpsBatchKernel.renameSelectedAttachmentCells(rule); },
+    diagnoseSelectionApis: function () { return wpsBatchKernel.diagnoseSelectionApis(); },
+    diagnoseSelectedAttachmentCells: function (options) { return wpsBatchKernel.diagnoseSelectedAttachmentCells(options); },
     // Legacy API — preserved for backward compatibility
     run,
     buildPlanFromTsv,
