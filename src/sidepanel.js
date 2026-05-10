@@ -15,6 +15,7 @@
   var btnCheck = $('btn-check');
   var btnScan = $('btn-scan');
   var btnRenameSelected = $('btn-rename-selected');
+  var btnDownloadSelected = $('btn-download-selected');
 
   var loading = $('loading');
   var loadingText = $('loading-text');
@@ -37,6 +38,20 @@
   var renameSection = $('rename-section');
   var renameStatusBar = $('rename-status-bar');
   var inputRangeOverride = $('input-range-override');
+  var downloadSection = $('download-section');
+  var downloadRangeHint = $('download-range-hint');
+  var downloadStatusBar = $('download-status-bar');
+  var inputDownloadRangeOverride = $('input-download-range-override');
+  var btnPreviewDownload = $('btn-preview-download');
+  var downloadPreviewWrap = $('download-preview-wrap');
+  var downloadPreviewSummary = $('download-preview-summary');
+  var downloadPreviewBody = $('download-preview-body');
+  var btnConfirmDownload = $('btn-confirm-download');
+  var downloadConfirmHint = $('download-confirm-hint');
+  var downloadResult = $('download-result');
+  var downloadQueuedCount = $('download-queued-count');
+  var downloadErrorCount = $('download-error-count');
+
   var diagnoseWrap = $('diagnose-wrap');
   var btnDiagnoseSelection = $('btn-diagnose-selection');
   var btnDiagnoseAttachment = $('btn-diagnose-attachment');
@@ -69,6 +84,7 @@
     selectedColumnIndexes: [], // for naming rule, in order
     renamePreview: null,
     templateDirty: false, // true if user manually edited template
+    downloadItems: [],
   };
 
   // -------- Helpers --------
@@ -186,19 +202,29 @@
 
       if (!env.isKdocs) {
         showError('当前页面不是 WPS/KDocs 表格页面');
+        btnScan.disabled = true;
+        btnRenameSelected.disabled = true;
+        btnDownloadSelected.disabled = true;
         return;
       }
       if (!env.hasWPSBatch) {
         showError('页面脚本未注入。请刷新页面后重试');
+        btnScan.disabled = true;
+        btnRenameSelected.disabled = true;
+        btnDownloadSelected.disabled = true;
         return;
       }
 
       btnScan.disabled = false;
-      showInfo('页面就绪，可以扫描');
+      btnDownloadSelected.disabled = false;
+      showInfo('页面就绪，可以扫描或下载');
     } catch (error) {
       showError('检查页面失败: ' + error.message);
       setBadge(statusPage, 'error', '错误');
       setBadge(statusBridge, 'error', '未知');
+      btnScan.disabled = true;
+      btnRenameSelected.disabled = true;
+      btnDownloadSelected.disabled = true;
     } finally {
       hideLoading();
     }
@@ -563,9 +589,9 @@
         // Check if it's a selection failure
         if (/无法读取当前选区/.test(errMsg)) {
           if (hasManualRange) {
-            showError('手动范围格式不正确，请输入类似 F2:F20 或 A1:C3');
+            showError('手动范围格式不正确，请输入类似 C3:C9 或 C3,C5,C8');
           } else {
-            showError('无法自动读取当前选区。请在"手动指定范围"中输入类似 F2:F20，或复制选区诊断报告给开发者。');
+            showError('无法自动读取当前选区。请在"手动指定范围"中输入类似 C3:C9 或 C3,C5,C8，或复制选区诊断报告给开发者。');
           }
           diagnoseWrap.classList.remove('hidden');
         } else if (/无法反查附件/.test(errMsg)) {
@@ -718,6 +744,156 @@
     }
   }
 
+  // -------- Download Flow --------
+
+  async function doOpenDownloadPanel() {
+    hideError(); hideInfo();
+    downloadSection.classList.remove('hidden');
+
+    if (!state.bridgeReady) {
+      downloadStatusBar.textContent = '请先检查页面';
+      return;
+    }
+
+    downloadStatusBar.textContent = '框选 WPS 表格中的附件单元格，或在下方填写手动范围后点击预览。下载使用附件当前显示名作为文件名';
+    downloadPreviewWrap.classList.add('hidden');
+    downloadResult.classList.add('hidden');
+    btnConfirmDownload.disabled = true;
+
+    // Scroll to download section
+    downloadSection.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  async function doPreviewDownload() {
+    hideError(); hideInfo();
+    downloadPreviewWrap.classList.add('hidden');
+    downloadResult.classList.add('hidden');
+    showLoading('准备下载列表...');
+
+    try {
+      var opts = { rangeOverride: inputDownloadRangeOverride.value.trim() };
+      var result = await sendCommand('prepareSelectedAttachmentDownloads', opts);
+
+      if (!result.ok) {
+        var errMsg = result.error || '准备下载失败';
+        if (/无法读取当前选区/.test(errMsg)) {
+          showError('无法自动读取当前选区。请填写手动范围，如 C3:C9 或 C3,C5,C8');
+        } else {
+          showError(errMsg);
+        }
+        btnConfirmDownload.disabled = true;
+        return;
+      }
+
+      state.downloadItems = result.items || [];
+      renderDownloadPreview(result);
+
+      downloadPreviewWrap.classList.remove('hidden');
+      downloadRangeHint.textContent = '范围: ' + (result.range ? result.range.method : '') + ' | 共 ' + result.summary.total + ' 项';
+
+      var s = result.summary || {};
+      if (s.errorCount > 0) {
+        btnConfirmDownload.disabled = true;
+        downloadConfirmHint.textContent = '有 ' + s.errorCount + ' 项无法获取下载链接，无法执行';
+      } else {
+        btnConfirmDownload.disabled = false;
+        downloadConfirmHint.textContent = '确认后将通过浏览器下载 ' + s.readyCount + ' 个文件';
+      }
+    } catch (error) {
+      showError('准备下载失败: ' + error.message);
+      btnConfirmDownload.disabled = true;
+    } finally {
+      hideLoading();
+    }
+  }
+
+  function renderDownloadPreview(result) {
+    downloadPreviewSummary.textContent = '共 ' + (result.summary.total || 0) + ' 项, 就绪 ' + (result.summary.readyCount || 0) + ' 项, 错误 ' + (result.summary.errorCount || 0) + ' 项';
+    downloadPreviewBody.innerHTML = '';
+
+    (result.items || []).forEach(function (item) {
+      var tr = document.createElement('tr');
+
+      var tdRow = document.createElement('td');
+      tdRow.textContent = item.rowNumber || '-';
+      tr.appendChild(tdRow);
+
+      var tdAddr = document.createElement('td');
+      tdAddr.textContent = item.address || '';
+      tr.appendChild(tdAddr);
+
+      var tdName = document.createElement('td');
+      tdName.textContent = truncate(item.filename || '', 40);
+      tdName.title = item.filename || '';
+      tr.appendChild(tdName);
+
+      var tdStatus = document.createElement('td');
+      var tag = document.createElement('span');
+      if (item.status === 'ready') {
+        tag.className = 'status-tag status-tag-ok';
+        tag.textContent = '就绪';
+      } else {
+        tag.className = 'status-tag status-tag-error';
+        tag.textContent = truncate(item.error || '错误', 16);
+        tag.title = item.error || '';
+      }
+      tdStatus.appendChild(tag);
+      tr.appendChild(tdStatus);
+
+      downloadPreviewBody.appendChild(tr);
+    });
+  }
+
+  async function doConfirmDownload() {
+    hideError(); hideInfo();
+
+    if (!state.downloadItems.length) {
+      showError('没有可下载的项目');
+      return;
+    }
+
+    var readyItems = state.downloadItems.filter(function (item) { return item.status === 'ready'; });
+    if (!readyItems.length) {
+      showError('没有就绪的下载项目');
+      return;
+    }
+
+    showLoading('正在发送下载任务...');
+    try {
+      var bgResult = await chrome.runtime.sendMessage({
+        action: 'downloadAttachments',
+        items: readyItems.map(function (item) {
+          return {
+            downloadUrl: item.downloadUrl,
+            filename: item.filename,
+            subFileId: item.subFileId,
+            address: item.address,
+          };
+        }),
+      });
+
+      downloadResult.classList.remove('hidden');
+      var queued = 0;
+      var errors = 0;
+      if (bgResult && bgResult.ok && bgResult.results) {
+        for (var i = 0; i < bgResult.results.length; i++) {
+          if (bgResult.results[i].status === 'queued') queued++;
+          else errors++;
+        }
+      }
+      downloadQueuedCount.textContent = queued;
+      downloadErrorCount.textContent = errors;
+      btnConfirmDownload.disabled = true;
+
+      if (queued > 0) showInfo('已加入下载队列: ' + queued + ' 个文件');
+      if (errors > 0) showError('下载失败: ' + errors + ' 个');
+    } catch (error) {
+      showError('发送下载请求失败: ' + error.message);
+    } finally {
+      hideLoading();
+    }
+  }
+
   // -------- Selection Diagnosis --------
 
   async function doDiagnoseSelection() {
@@ -752,8 +928,19 @@
   btnCheck.addEventListener('click', doCheckPage);
   btnScan.addEventListener('click', doScan);
   btnRenameSelected.addEventListener('click', doOpenRenamePanel);
+  btnDownloadSelected.addEventListener('click', doOpenDownloadPanel);
   btnPreviewRename.addEventListener('click', doPreviewRename);
   btnConfirmRename.addEventListener('click', doConfirmRename);
+  btnConfirmDownload.addEventListener('click', doConfirmDownload);
+  btnPreviewDownload.addEventListener('click', doPreviewDownload);
+
+  // Clear old download preview when user changes the range
+  inputDownloadRangeOverride.addEventListener('input', function () {
+    state.downloadItems = [];
+    downloadPreviewWrap.classList.add('hidden');
+    downloadResult.classList.add('hidden');
+    btnConfirmDownload.disabled = true;
+  });
   btnDiagnoseSelection.addEventListener('click', doDiagnoseSelection);
   btnDiagnoseAttachment.addEventListener('click', doDiagnoseSelectedAttachmentCells);
 

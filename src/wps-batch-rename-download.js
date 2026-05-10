@@ -4805,6 +4805,81 @@
     };
   }
 
+  function parseA1Selection(selectionText) {
+    var text = String(selectionText || "").trim();
+    if (!text) return { ok: false, error: "空范围" };
+
+    // Split by comma (English and Chinese)
+    var parts = text.split(/[,，]/);
+    var cellSet = {}; // "row:col" → true for dedup
+    var cells = [];
+    var minRow = Infinity;
+    var maxRow = -Infinity;
+    var minCol = Infinity;
+    var maxCol = -Infinity;
+    var MAX_CELLS = 2000;
+
+    for (var pi = 0; pi < parts.length; pi++) {
+      var part = parts[pi].trim();
+      if (!part) continue;
+
+      var parsed = parseA1Range(part);
+      if (!parsed) {
+        return {
+          ok: false,
+          error: "手动范围格式不正确，请输入类似 C3:C9 或 C3,C5,C8。错误片段：" + part,
+          text: selectionText,
+        };
+      }
+
+      // Expand the range into individual cells
+      var rf = parsed.rowFrom;
+      var rt = parsed.rowTo;
+      var cf = parsed.colFrom;
+      var ct = parsed.colTo;
+      if (rf > rt) { var tmpR = rf; rf = rt; rt = tmpR; }
+      if (cf > ct) { var tmpC = cf; cf = ct; ct = tmpC; }
+
+      var expanded = (rt - rf + 1) * (ct - cf + 1);
+      if (cells.length + expanded > MAX_CELLS) {
+        return {
+          ok: false,
+          error: "手动范围单元格数量超过上限（" + MAX_CELLS + " 个）",
+          text: selectionText,
+        };
+      }
+
+      for (var r = rf; r <= rt; r++) {
+        for (var c = cf; c <= ct; c++) {
+          var key = r + ":" + c;
+          if (cellSet[key]) continue; // dedup
+          cellSet[key] = true;
+          cells.push({ rowIndex: r, colIndex: c });
+          if (r < minRow) minRow = r;
+          if (r > maxRow) maxRow = r;
+          if (c < minCol) minCol = c;
+          if (c > maxCol) maxCol = c;
+        }
+      }
+    }
+
+    if (!cells.length) {
+      return { ok: false, error: "手动范围为空", text: selectionText };
+    }
+
+    return {
+      ok: true,
+      method: "manual-selection",
+      cells: cells,
+      rowFrom: minRow === Infinity ? 0 : minRow,
+      rowTo: maxRow === -Infinity ? 0 : maxRow,
+      colFrom: minCol === Infinity ? 0 : minCol,
+      colTo: maxCol === -Infinity ? 0 : maxCol,
+      totalCells: cells.length,
+      text: selectionText,
+    };
+  }
+
   // ===== Selection Diagnosis API =====
 
   function diagnoseSelectionApis() {
@@ -5478,15 +5553,10 @@
     // Manual range override
     var rangeOverride = options.rangeOverride || "";
     if (rangeOverride && String(rangeOverride).trim()) {
-      var parsed = parseA1Range(rangeOverride);
-      if (!parsed) {
-        return {
-          ok: false,
-          error: "手动范围格式不正确，请输入类似 F2:F20 或 A1:C3",
-          rangeOverride: rangeOverride,
-        };
+      var parsed = parseA1Selection(rangeOverride);
+      if (!parsed.ok) {
+        return { ok: false, error: parsed.error, rangeOverride: rangeOverride };
       }
-      parsed.method = "manual-override";
       parsed.ok = true;
       return parsed;
     }
@@ -6161,7 +6231,7 @@
   function inspectSelectedAttachmentCells(options) {
     options = options || {};
     var rangeResult = getSelectedRange(options);
-    if (!rangeResult.ok && !Number.isFinite(rangeResult.rowFrom)) {
+    if (!rangeResult.ok && !Number.isFinite(rangeResult.rowFrom) && (!rangeResult.cells || !rangeResult.cells.length)) {
       return {
         ok: false,
         error: rangeResult.error || "无法读取当前选区",
@@ -6170,40 +6240,47 @@
       };
     }
 
-    var rowFrom = Number(rangeResult.rowFrom);
-    var rowTo = Number(rangeResult.rowTo);
-    var colFrom = Number(rangeResult.colFrom);
-    var colTo = Number(rangeResult.colTo);
-
-    var rowCount = rowTo - rowFrom + 1;
-    var colCount = colTo - colFrom + 1;
-    var totalCells = rowCount * colCount;
-    // Safety cap
-    if (totalCells > 2000) {
-      return {
-        ok: false,
-        error: "选区过大（" + totalCells + " 个单元格），请缩小选区（最多 2000 个单元格）",
-        range: { rowFrom: rowFrom, rowTo: rowTo, colFrom: colFrom, colTo: colTo },
-        cells: [],
-      };
-    }
-
-    // IMPORTANT: detectAttachmentMetaAtCell is async, but inspectSelectedAttachmentCells is sync.
-    // We can't await inside a loop. Instead, we'll do synchronous "best-effort" detection first,
-    // and return a promise that the caller can await. But since the caller (previewRenameSelectedAttachments)
-    // is async, we restructure: the expensive async detection happens later.
-    //
-    // For now, we do sync detection (cell-object only) fast, then mark cells that need
-    // async detection (range-query). The actual async work is done by the caller.
-
     var cells = [];
     var nonAttachmentCount = 0;
     var attachmentCount = 0;
     var errorCount = 0;
     var pendingAsyncCells = []; // cells that need async range-query detection
 
-    for (var r = rowFrom; r <= rowTo; r++) {
-      for (var c = colFrom; c <= colTo; c++) {
+    // Build iteration list — either discrete cells or rectangular loop
+    var iterCells = [];
+    if (rangeResult.cells && rangeResult.cells.length) {
+      iterCells = rangeResult.cells;
+    } else {
+      var rowFrom = Number(rangeResult.rowFrom);
+      var rowTo = Number(rangeResult.rowTo);
+      var colFrom = Number(rangeResult.colFrom);
+      var colTo = Number(rangeResult.colTo);
+      var totalCells = (rowTo - rowFrom + 1) * (colTo - colFrom + 1);
+      if (totalCells > 2000) {
+        return {
+          ok: false,
+          error: "选区过大（" + totalCells + " 个单元格），请缩小选区（最多 2000 个单元格）",
+          range: { rowFrom: rowFrom, rowTo: rowTo, colFrom: colFrom, colTo: colTo },
+          cells: [],
+        };
+      }
+      for (var rr = rowFrom; rr <= rowTo; rr++) {
+        for (var cc = colFrom; cc <= colTo; cc++) {
+          iterCells.push({ rowIndex: rr, colIndex: cc });
+        }
+      }
+    }
+
+    var totalCells = iterCells.length;
+    var actualRange = rangeResult.cells ? rangeResult : {
+      rowFrom: Number(rangeResult.rowFrom), rowTo: Number(rangeResult.rowTo),
+      colFrom: Number(rangeResult.colFrom), colTo: Number(rangeResult.colTo),
+      method: rangeResult.method,
+    };
+
+    for (var ii = 0; ii < iterCells.length; ii++) {
+      var r = iterCells[ii].rowIndex;
+      var c = iterCells[ii].colIndex;
         var entry = {
           rowIndex: r,
           colIndex: c,
@@ -6360,11 +6437,10 @@
 
         cells.push(entry);
       }
-    }
 
     var result = {
       ok: true,
-      range: { rowFrom: rowFrom, rowTo: rowTo, colFrom: colFrom, colTo: colTo, method: rangeResult.method },
+      range: actualRange,
       cells: cells,
       summary: {
         totalCells: totalCells,
@@ -6912,6 +6988,122 @@
     };
   }
 
+  // ===== Selected Attachment Download Preparation =====
+
+  async function prepareSelectedAttachmentDownloads(options) {
+    options = options || {};
+    var rangeOverride = options.rangeOverride || "";
+
+    // Inspect selected cells
+    var inspectResult = await inspectSelectedAttachmentCellsAsync({ rangeOverride: rangeOverride });
+    if (!inspectResult.ok) {
+      return { ok: false, error: inspectResult.error, range: inspectResult.range, items: [], summary: {} };
+    }
+
+    var attachmentCells = [];
+    for (var i = 0; i < inspectResult.cells.length; i++) {
+      if (inspectResult.cells[i].isAttachment) attachmentCells.push(inspectResult.cells[i]);
+    }
+
+    if (!attachmentCells.length) {
+      return {
+        ok: false,
+        error: "当前范围没有识别到可改名附件，无法准备下载",
+        range: inspectResult.range,
+        items: [],
+        summary: {},
+      };
+    }
+
+    if (inspectResult.summary.nonAttachmentCount > 0) {
+      return {
+        ok: false,
+        error: "范围中有 " + inspectResult.summary.nonAttachmentCount + " 个非附件单元格，请只框选附件单元格",
+        range: inspectResult.range,
+        items: [],
+        summary: { nonAttachmentCount: inspectResult.summary.nonAttachmentCount },
+      };
+    }
+
+    var items = [];
+    var successCount = 0;
+    var errorCount = 0;
+    var delayMs = CONFIG.downloadDelayMs || 500;
+
+    for (var j = 0; j < attachmentCells.length; j++) {
+      var cell = attachmentCells[j];
+      var subFileId = (cell.attachmentMeta && cell.attachmentMeta.subFileId) || "";
+      // Always use current cell display text, never the original attachment file name
+      var displayName = cell.cellText.replace(/^📄/, "").trim();
+      var ext = (cell.attachmentMeta && cell.attachmentMeta.aType) || "pdf";
+      var rawFilename = sanitizeFilename(displayName);
+      var filename = ensureExt(rawFilename, "");
+      // ensureExt with empty URL falls back to CONFIG.defaultExt (.pdf). Override if aType differs.
+      if (!/\.[a-z0-9]{2,8}$/i.test(filename) || (cell.attachmentMeta && cell.attachmentMeta.aType && !filename.endsWith("." + cell.attachmentMeta.aType))) {
+        filename = rawFilename;
+        if (!/\.[a-z0-9]{2,8}$/i.test(filename)) filename = filename + "." + ext;
+      }
+
+      if (CONFIG.debug) {
+        log("[download-prep]", cell.colName + (cell.rowNumber != null ? cell.rowNumber : (cell.rowIndex + 1)),
+          "cellText=" + cell.cellText,
+          "displayName=" + displayName,
+          "meta.fileName=" + ((cell.attachmentMeta && cell.attachmentMeta.fileName) || ""),
+          "filename=" + filename);
+      }
+
+      var item = {
+        rowIndex: cell.rowIndex,
+        rowNumber: cell.rowNumber,
+        colIndex: cell.colIndex,
+        colName: cell.colName,
+        address: cell.colName + (cell.rowNumber != null ? cell.rowNumber : (cell.rowIndex + 1)),
+        subFileId: subFileId,
+        displayName: displayName,
+        filename: filename,
+        downloadUrl: "",
+        status: "",
+        error: "",
+      };
+
+      if (!subFileId) {
+        item.status = "error";
+        item.error = "无附件 subFileId";
+        items.push(item);
+        errorCount++;
+        continue;
+      }
+
+      try {
+        var info = await resolveAttachmentDownloadUrl(subFileId);
+        item.downloadUrl = info.download_url || "";
+        item.status = "ready";
+        successCount++;
+        items.push(item);
+      } catch (e) {
+        item.status = "error";
+        item.error = e.message || String(e);
+        items.push(item);
+        errorCount++;
+      }
+
+      if (j < attachmentCells.length - 1) {
+        await sleep(delayMs);
+      }
+    }
+
+    return {
+      ok: true,
+      range: inspectResult.range,
+      items: items,
+      summary: {
+        total: items.length,
+        readyCount: successCount,
+        errorCount: errorCount,
+      },
+    };
+  }
+
   function createWpsBatchKernel() {
     var lastScanResult = null;
     var lastMatchResult = null;
@@ -7216,6 +7408,7 @@
     kernel.renameSelectedAttachmentCells = renameSelectedAttachmentCells;
     kernel.diagnoseSelectionApis = diagnoseSelectionApis;
     kernel.diagnoseSelectedAttachmentCells = diagnoseSelectedAttachmentCells;
+    kernel.prepareSelectedAttachmentDownloads = prepareSelectedAttachmentDownloads;
 
     return kernel;
   }
@@ -7240,6 +7433,7 @@
     renameSelectedAttachmentCells: function (rule) { return wpsBatchKernel.renameSelectedAttachmentCells(rule); },
     diagnoseSelectionApis: function () { return wpsBatchKernel.diagnoseSelectionApis(); },
     diagnoseSelectedAttachmentCells: function (options) { return wpsBatchKernel.diagnoseSelectedAttachmentCells(options); },
+    prepareSelectedAttachmentDownloads: function (options) { return wpsBatchKernel.prepareSelectedAttachmentDownloads(options); },
     // Legacy API — preserved for backward compatibility
     run,
     buildPlanFromTsv,
