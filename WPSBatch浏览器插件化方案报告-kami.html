@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<!-- ==================================================================
+     LONG DOCUMENT TEMPLATE · parchment design system
+     多页 A4 白皮书/技术报告/年度总结
+     结构：封面 -> 目录 -> 执行摘要 -> 正文章节 -> 附录
+     ================================================================== -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>WPSBatch 浏览器插件化方案报告</title>
+<meta name="author" content="Codex">
+<meta name="description" content="把 WPSBatch 控制台脚本改造成 Chrome/Edge 浏览器扩展的技术方案，覆盖架构、通用表格适配、执行流程、风险与开发阶段。">
+<meta name="keywords" content="WPSBatch, 浏览器插件, Chrome Extension, WPS 表格, 附件批量改名">
+<meta name="generator" content="Kami">
+<style>
+  /* Regular weight */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("fonts/TsangerJinKai02-W04.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W04.ttf") format("truetype");
+    font-weight: 400;
+    font-style: normal;
+  }
+
+  /* Bold weight - W05 for all bold variants */
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: url("fonts/TsangerJinKai02-W05.ttf") format("truetype"),
+       url("https://cdn.jsdelivr.net/gh/tw93/Kami@main/assets/fonts/TsangerJinKai02-W05.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+
+  @font-face {
+    font-family: "JetBrains Mono";
+    src: url("fonts/JetBrainsMono.woff2") format("woff2");
+    font-weight: 400 500;
+    font-style: normal;
+  }
+
+  @page {
+    size: A4;
+    margin: 20mm 22mm 22mm 22mm;
+    background: #f5f4ed;
+
+    @top-right {
+      content: string(section-title);
+      font-family: "TsangerJinKai02", "Source Han Serif SC",
+                   "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+      font-size: 8pt;
+      color: #6b6a64;
+    }
+
+    @bottom-center {
+      content: counter(page) "  ·  WPSBatch 浏览器插件化方案报告";
+      font-family: "TsangerJinKai02", "Source Han Serif SC",
+                   "Noto Serif CJK SC", "Songti SC", Georgia, serif;
+      font-size: 9pt;
+      color: #6b6a64;
+    }
+  }
+
+  @page:first {
+    @top-right { content: ""; }
+    @bottom-center { content: ""; }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory:     #faf9f5;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+    --tag-bg:    #E4ECF5;
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", Georgia, serif;
+    --sans: var(--serif);
+  }
+
+  html, body { background: var(--parchment); }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 20mm 22mm 22mm 22mm; }
+  }
+
+  body {
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 10.5pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+    widows: 3;
+    orphans: 3;
+  }
+
+  .sans {
+    font-family: var(--sans);
+  }
+
+  /* ========== COVER ========== */
+  .cover {
+    min-height: 240mm;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 40mm 0 0 0;
+    break-after: page;
+  }
+  .cover-eyebrow {
+    font-family: var(--sans);
+    font-size: 10pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    margin-bottom: 18pt;
+  }
+  .cover-title {
+    font-size: 36pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.15;
+    letter-spacing: 0.3pt;
+    margin-bottom: 16pt;
+  }
+  .cover-sub {
+    font-family: var(--sans);
+    font-size: 14pt;
+    color: var(--olive);
+    line-height: 1.5;
+    max-width: 85%;
+    margin-bottom: 30pt;
+  }
+  .cover-meta {
+    font-family: var(--sans);
+    font-size: 10pt;
+    color: var(--stone);
+    line-height: 1.5;
+  }
+  .cover-meta strong {
+    color: var(--dark-warm);
+    font-weight: 500;
+  }
+
+  /* ========== TOC（目录）========== */
+  .toc { break-after: page; }
+  .toc h2 {
+    font-size: 22pt;
+    font-weight: 500;
+    margin-bottom: 14pt;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+  }
+  .toc-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 6pt 0;
+    border-bottom: 0.3pt dotted var(--border);
+    font-size: 11pt;
+  }
+  .toc-item:last-of-type { border-bottom: none; }
+  .toc-num {
+    color: var(--brand);
+    font-weight: 500;
+    min-width: 30pt;
+  }
+  .toc-title {
+    flex: 1;
+    color: var(--near-black);
+    padding-left: 6pt;
+  }
+  .toc-page {
+    color: var(--stone);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ========== HEADINGS ========== */
+  h1 {
+    font-size: 22pt;
+    font-weight: 500;
+    line-height: 1.2;
+    margin: 0 0 10pt 0;
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 1.5pt;
+    padding-left: 8pt;
+    color: var(--near-black);
+    break-after: avoid;
+  }
+
+  h2 {
+    font-size: 16pt;
+    font-weight: 500;
+    line-height: 1.25;
+    margin: 24pt 0 8pt 0;
+    color: var(--near-black);
+    break-after: avoid;
+    string-set: section-title content();
+  }
+
+  h3 {
+    font-size: 13pt;
+    font-weight: 500;
+    line-height: 1.3;
+    margin: 18pt 0 6pt 0;
+    color: var(--dark-warm);
+    break-after: avoid;
+  }
+
+  .chapter-num {
+    font-family: var(--sans);
+    font-size: 10pt;
+    color: var(--brand);
+    letter-spacing: 1pt;
+    text-transform: uppercase;
+    margin-bottom: 6pt;
+  }
+
+  /* ========== PARAGRAPHS ========== */
+  p {
+    margin: 0 0 10pt 0;
+    line-height: 1.55;
+    color: var(--near-black);
+    widows: 2;
+    orphans: 2;
+  }
+
+  .lead {
+    font-size: 12pt;
+    line-height: 1.55;
+    color: var(--dark-warm);
+    margin-bottom: 14pt;
+  }
+
+  .hl { color: var(--brand); font-weight: 500; }
+  strong { font-weight: 500; }
+
+  /* ========== LISTS ========== */
+  ul, ol {
+    margin: 6pt 0 10pt 0;
+    padding-left: 20pt;
+    line-height: 1.55;
+  }
+  ul li::marker { color: var(--brand); }
+  ol li::marker { color: var(--brand); font-weight: 500; }
+
+  /* ========== QUOTE ========== */
+  blockquote, .quote {
+    border-left: 2pt solid var(--brand);
+    margin: 12pt 0;
+    padding: 4pt 0 4pt 16pt;
+    color: var(--olive);
+    line-height: 1.55;
+    break-inside: avoid;
+  }
+  blockquote .cite, .quote .cite {
+    display: block;
+    font-size: 9pt;
+    color: var(--stone);
+    margin-top: 4pt;
+  }
+
+  /* ========== CODE ========== */
+  /* Mono first for English glyphs, then CJK fallback so Chinese comments
+     inside code/pre render correctly. A mono-only chain causes missing
+     glyphs rendered as "?" or missing-glyph boxes in WeasyPrint when the system lacks
+     a mono font with CJK coverage. */
+  code {
+    font-family: "JetBrains Mono", "SF Mono", Consolas,
+                 "TsangerJinKai02", "Source Han Serif SC",
+                 "Noto Serif CJK SC", "Songti SC", monospace;
+    font-size: 9pt;
+    background: var(--ivory);
+    padding: 1pt 4pt;
+    border-radius: 2pt;
+    color: var(--dark-warm);
+  }
+  pre {
+    font-family: "JetBrains Mono", "SF Mono", Consolas,
+                 "TsangerJinKai02", "Source Han Serif SC",
+                 "Noto Serif CJK SC", "Songti SC", monospace;
+    font-size: 9pt;
+    line-height: 1.5;
+    background: var(--ivory);
+    border-radius: 4pt;
+    padding: 10pt 14pt;
+    margin: 10pt 0;
+    white-space: pre-wrap;
+    color: var(--near-black);
+    break-inside: avoid;
+  }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+
+  /* ========== TABLE (kami-table) ========== */
+  table, .kami-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+    margin: 12pt 0;
+    break-inside: avoid;
+  }
+  table th, .kami-table th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--dark-warm);
+    padding: 6pt 8pt;
+    border-bottom: 1pt solid var(--border);
+    background: transparent;
+  }
+  table td, .kami-table td {
+    padding: 5pt 8pt;
+    border-bottom: 0.3pt solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.compact th, .kami-table.compact th { padding: 3pt 6pt; font-size: 8pt; }
+  table.compact td, .kami-table.compact td { padding: 2pt 6pt; font-size: 8pt; line-height: 1.4; }
+  table.financial td:not(:first-child), .kami-table.financial td:not(:first-child) {
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.financial th:not(:first-child), .kami-table.financial th:not(:first-child) { text-align: right; }
+  table.striped tbody tr:nth-child(even) td, .kami-table.striped tbody tr:nth-child(even) td {
+    background: var(--ivory);
+  }
+  table .total td, .kami-table .total td {
+    font-weight: 500; border-top: 1pt solid var(--brand); border-bottom: none; color: var(--near-black);
+  }
+
+  /* ========== CALLOUT ========== */
+  .callout {
+    background: var(--ivory);
+    border-left: 2pt solid var(--brand);
+    padding: 10pt 14pt;
+    border-radius: 3pt;
+    margin: 12pt 0;
+    line-height: 1.55;
+    break-inside: avoid;
+  }
+  .callout blockquote,
+  .callout .quote {
+    border-left: none;
+    padding-left: 0;
+    margin: 6pt 0;
+    color: var(--olive);
+  }
+  .callout blockquote:first-child,
+  .callout .quote:first-child { margin-top: 0; }
+  .callout blockquote:last-child,
+  .callout .quote:last-child  { margin-bottom: 0; }
+
+  .takeaway {
+    background: var(--ivory);
+    border-radius: 4pt;
+    padding: 10pt 14pt;
+    margin: 14pt 0;
+    break-inside: avoid;
+  }
+  .takeaway-label {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 0.5pt;
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+  }
+
+  /* ========== TAG ========== */
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--brand);
+    font-family: var(--sans);
+    font-size: 9pt;
+    font-weight: 500;
+    padding: 1pt 6pt;
+    border-radius: 3pt;
+    margin-right: 4pt;
+  }
+
+  /* ========== FIGURE ========== */
+  figure {
+    margin: 14pt 0;
+    break-inside: avoid;
+  }
+  figure img {
+    max-width: 100%;
+    border-radius: 4pt;
+  }
+  figcaption {
+    font-family: var(--sans);
+    font-size: 9pt;
+    color: var(--stone);
+    margin-top: 6pt;
+    text-align: center;
+  }
+
+  /* ========== EXECUTIVE SUMMARY ========== */
+  .exec-summary {
+    background: var(--ivory);
+    border-left: 1.4pt solid var(--brand);
+    border-radius: 6pt;
+    padding: 16pt 20pt;
+    margin: 14pt 0;
+    break-inside: avoid;
+  }
+  .exec-summary h2 {
+    margin-top: 0;
+    font-size: 13pt;
+  }
+
+  /* ========== CHAPTER BREAK ========== */
+  .chapter { break-before: page; }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8pt;
+    margin: 12pt 0 16pt;
+  }
+  .meta-card {
+    background: var(--ivory);
+    border: 0.5pt solid var(--border);
+    border-radius: 6pt;
+    padding: 10pt 12pt;
+    break-inside: avoid;
+  }
+  .meta-card .label {
+    font-family: var(--sans);
+    font-size: 8.5pt;
+    letter-spacing: 0.5pt;
+    color: var(--stone);
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+  }
+  .meta-card .value {
+    font-size: 12pt;
+    font-weight: 500;
+    color: var(--brand);
+    line-height: 1.25;
+  }
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12pt;
+    margin: 10pt 0;
+  }
+  .small { font-size: 9.5pt; color: var(--olive); }
+  a { color: var(--brand); text-decoration: none; }
+  .architecture svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: var(--parchment);
+    border: 0.5pt solid var(--border);
+    border-radius: 6pt;
+  }
+</style>
+</head>
+<body>
+
+<!-- ═════════════ COVER ═════════════ -->
+<section class="cover">
+  <div>
+    <div class="cover-eyebrow">Technical Report · Pluginization Plan</div>
+    <div class="cover-title">WPSBatch<br>浏览器插件化方案报告</div>
+    <div class="cover-sub">把当前可跑通的 WPS 表格附件批量改名下载脚本，改造成可复用、可配置、可预览、可诊断的 Chrome/Edge 扩展。</div>
+  </div>
+  <div class="cover-meta">
+    <strong>Codex</strong><br>
+    V1.0  ·  2026.05.10<br>
+    基于 wps-batch-rename-download.js 与当前 KDocs 实测路径
+  </div>
+</section>
+
+<!-- ═════════════ 目录 ═════════════ -->
+<section class="toc">
+  <h2>目录</h2>
+  <div class="toc-item">
+    <span class="toc-num">01</span>
+    <span class="toc-title">执行摘要</span>
+    <span class="toc-page">03</span>
+  </div>
+  <div class="toc-item">
+    <span class="toc-num">02</span>
+    <span class="toc-title">现有脚本能力与边界</span>
+    <span class="toc-page">04</span>
+  </div>
+  <div class="toc-item">
+    <span class="toc-num">03</span>
+    <span class="toc-title">插件架构方案</span>
+    <span class="toc-page">06</span>
+  </div>
+  <div class="toc-item">
+    <span class="toc-num">04</span>
+    <span class="toc-title">通用表格适配与执行流程</span>
+    <span class="toc-page">09</span>
+  </div>
+  <div class="toc-item">
+    <span class="toc-num">05</span>
+    <span class="toc-title">风险、回滚与实施路线</span>
+    <span class="toc-page">11</span>
+  </div>
+</section>
+
+<!-- ═════════════ Chapter 01：执行摘要 ═════════════ -->
+<section class="chapter">
+  <div class="chapter-num">01 · Executive Summary</div>
+  <h1>执行摘要</h1>
+
+  <p class="lead">
+    当前脚本已经证明了核心路径可行：可以从 WPS 表格读取任务、匹配附件 ID、更新单元格显示名、修改附件对象名并触发下载。下一步不应把 4493 行脚本简单塞进扩展按钮，而应拆成 <span class="hl">页面内核、内容脚本、后台服务、弹窗 UI</span> 四层，让它变成可迁移到其他表格的工具。
+  </p>
+
+  <h2>核心 Takeaways</h2>
+  <ul>
+    <li>插件第一版建议只做 Chrome/Edge Chromium，使用 Manifest V3，权限收敛在 <code>scripting</code>、<code>activeTab</code>、<code>downloads</code>、<code>storage</code> 与 KDocs 域名。</li>
+    <li>“换一个表格也能跑”的关键不是硬编码列号，而是表头别名、命名模板、扫描范围、失败策略都可配置。</li>
+    <li>大批量附件可支持，但必须分批扫描、队列下载、执行前预览；遇到附件 ID 只能靠顺序兜底时，应进入人工确认状态。</li>
+    <li>最大的长期风险来自 WPS 内部 API 变动；插件要把诊断报告产品化，而不是假设接口永远稳定。</li>
+  </ul>
+
+  <div class="meta-grid">
+    <div class="meta-card">
+      <div class="label">Current Script</div>
+      <div class="value">4493 行</div>
+      <p class="small">已包含扫描、匹配、改名、下载和诊断报告。</p>
+    </div>
+    <div class="meta-card">
+      <div class="label">Default Scan</div>
+      <div class="value">10000 × 60</div>
+      <p class="small">默认最大行数与列数，可在插件配置中暴露。</p>
+    </div>
+    <div class="meta-card">
+      <div class="label">Decision</div>
+      <div class="value">内部自用版先行</div>
+      <p class="small">先稳定业务闭环，再考虑发布渠道。</p>
+    </div>
+  </div>
+
+  <div class="takeaway">
+    <div class="takeaway-label">本文档回答的问题</div>
+    它能不能在别的 KDocs 表格里用？列不在 C/F 时怎么办？很多行很多附件时怎么避免误改、漏下和浏览器拦截？这三件事决定插件是否值得做。
+  </div>
+</section>
+
+<!-- ═════════════ Chapter 02：背景 ═════════════ -->
+<section class="chapter">
+  <div class="chapter-num">02 · Current Script</div>
+  <h1>现有脚本能力与边界</h1>
+
+  <p class="lead">
+    这份脚本已经不是一次性下载器，而是一个在控制台中运行的 WPS 自动化内核。插件化要保留它已经验证过的能力，同时把“需要人肉操作控制台”的部分移到扩展界面。
+  </p>
+
+  <h2>已验证能力</h2>
+  <table class="kami-table compact">
+    <thead>
+      <tr>
+        <th>能力</th>
+        <th>当前入口</th>
+        <th>插件化后的归属</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>读取表格并生成计划</td>
+        <td><code>buildPlanDirectlyFromPage()</code></td>
+        <td>页面内核：返回标准化 plan</td>
+      </tr>
+      <tr>
+        <td>按表头识别列</td>
+        <td><code>maxTableRows</code>、<code>maxTableCols</code> 与 header 推断</td>
+        <td>配置模块：表头别名、扫描范围</td>
+      </tr>
+      <tr>
+        <td>读取附件 ID</td>
+        <td><code>makeAutoAttachmentMap()</code>、link runs、hyperlinks 探测</td>
+        <td>附件解析器：输出 match confidence</td>
+      </tr>
+      <tr>
+        <td>更新单元格显示名</td>
+        <td><code>updateSheetAttachmentCellsByAttachmentMap()</code></td>
+        <td>WPS mutator：执行前写入回滚记录</td>
+      </tr>
+      <tr>
+        <td>改附件对象名并下载</td>
+        <td><code>renameByAttachmentMap()</code>、<code>downloadByAttachmentMap()</code></td>
+        <td>页面内核改远端名，后台服务负责下载队列</td>
+      </tr>
+      <tr>
+        <td>诊断报告</td>
+        <td><code>reportTableState()</code>、<code>reportHyperlinkMethodSurface()</code> 等</td>
+        <td>报告模块：一键复制、导出 JSON</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>核心问题</h2>
+  <p>脚本能在当前文件跑通，不等于它已经是通用工具。通用化的关键约束有三个：表格结构不固定、附件 ID 不总是直接暴露、WPS 内部 API 没有公开稳定契约。</p>
+
+  <div class="callout">
+    插件可以做到“换文档后仍然大概率可用”，但不应该承诺“任意表格完美运行”。正确目标是：常见模板自动识别；不确定时给预览和异常原因；高风险匹配必须让用户确认。
+  </div>
+
+  <h2>衡量标准</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>维度</th>
+        <th>控制台脚本</th>
+        <th>插件目标</th>
+        <th>验收方式</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>列位置变化</td>
+        <td>已不完全依赖 C/F，但配置隐藏在脚本里</td>
+        <td>表头别名可配置，扫描预览显示列命中</td>
+        <td>移动附件列后仍能生成正确 plan</td>
+      </tr>
+      <tr>
+        <td>大批量任务</td>
+        <td>默认 10000 行、60 列，下载节流 700ms</td>
+        <td>队列执行、进度条、失败重试</td>
+        <td>500 行、1000 个附件任务不阻塞 UI</td>
+      </tr>
+      <tr>
+        <td>误匹配防护</td>
+        <td>已有 diagnostics，但仍偏调试</td>
+        <td>按置信度分级：确定、需确认、失败</td>
+        <td>顺序兜底匹配不会无提示执行</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═════════════ Chapter 03：方法 ═════════════ -->
+<section class="chapter">
+  <div class="chapter-num">03 · Architecture</div>
+  <h1>插件架构方案</h1>
+
+  <p class="lead">推荐使用 Chrome Manifest V3，把现有脚本拆成四层：页面注入脚本访问 WPS 内部对象，content script 做消息桥，service worker 管下载和持久化，popup 负责预览和确认。</p>
+
+  <figure class="architecture">
+    <svg viewBox="0 0 960 520" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="#E3E2DC"/>
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="#f5f4ed"/>
+      <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+      <text x="64" y="42" fill="#1B365D" font-size="14" font-weight="500" font-family="JetBrains Mono, monospace" letter-spacing="3">FIGURE  1</text>
+      <text x="190" y="42" fill="#504e49" font-size="14" font-family="JetBrains Mono, monospace" letter-spacing="3">WPSBATCH EXTENSION ARCHITECTURE</text>
+      <line x1="64" y1="58" x2="896" y2="58" stroke="#1B365D" stroke-width="1"/>
+
+      <rect x="80" y="104" width="160" height="72" rx="8" fill="#EEF2F7" stroke="#1B365D" stroke-width="1.4"/>
+      <text x="160" y="134" text-anchor="middle" fill="#141413" font-size="22" font-weight="500" font-family="TsangerJinKai02, serif">Popup UI</text>
+      <text x="160" y="158" text-anchor="middle" fill="#504e49" font-size="14" font-family="TsangerJinKai02, serif">扫描 · 预览 · 确认</text>
+
+      <rect x="304" y="104" width="176" height="72" rx="8" fill="#faf9f5" stroke="#504e49" stroke-width="1.2"/>
+      <text x="392" y="134" text-anchor="middle" fill="#141413" font-size="22" font-weight="500" font-family="TsangerJinKai02, serif">Content Script</text>
+      <text x="392" y="158" text-anchor="middle" fill="#504e49" font-size="14" font-family="TsangerJinKai02, serif">消息桥 · 页面状态</text>
+
+      <rect x="544" y="104" width="176" height="72" rx="8" fill="#EEF2F7" stroke="#1B365D" stroke-width="1.4"/>
+      <text x="632" y="134" text-anchor="middle" fill="#141413" font-size="22" font-weight="500" font-family="TsangerJinKai02, serif">Page Kernel</text>
+      <text x="632" y="158" text-anchor="middle" fill="#504e49" font-size="14" font-family="TsangerJinKai02, serif">APP · sheetData · link runs</text>
+
+      <rect x="544" y="256" width="176" height="72" rx="8" fill="#faf9f5" stroke="#504e49" stroke-width="1.2"/>
+      <text x="632" y="286" text-anchor="middle" fill="#141413" font-size="22" font-weight="500" font-family="TsangerJinKai02, serif">WPS Runtime</text>
+      <text x="632" y="310" text-anchor="middle" fill="#504e49" font-size="14" font-family="TsangerJinKai02, serif">表格数据 · 附件接口</text>
+
+      <rect x="304" y="328" width="176" height="72" rx="8" fill="#faf9f5" stroke="#504e49" stroke-width="1.2"/>
+      <text x="392" y="358" text-anchor="middle" fill="#141413" font-size="22" font-weight="500" font-family="TsangerJinKai02, serif">Service Worker</text>
+      <text x="392" y="382" text-anchor="middle" fill="#504e49" font-size="14" font-family="TsangerJinKai02, serif">下载队列 · 配置 · 历史</text>
+
+      <rect x="80" y="328" width="160" height="72" rx="8" fill="#faf9f5" stroke="#504e49" stroke-width="1.2"/>
+      <text x="160" y="358" text-anchor="middle" fill="#141413" font-size="22" font-weight="500" font-family="TsangerJinKai02, serif">Browser APIs</text>
+      <text x="160" y="382" text-anchor="middle" fill="#504e49" font-size="14" font-family="TsangerJinKai02, serif">downloads · storage</text>
+
+      <path d="M240 140 H304" fill="none" stroke="#1B365D" stroke-width="1.4"/>
+      <path d="M296 135 L304 140 L296 145" fill="none" stroke="#1B365D" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M480 140 H544" fill="none" stroke="#1B365D" stroke-width="1.4"/>
+      <path d="M536 135 L544 140 L536 145" fill="none" stroke="#1B365D" stroke-width="1.4" stroke-linecap="round"/>
+      <path d="M632 176 V256" fill="none" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M627 248 L632 256 L637 248" fill="none" stroke="#504e49" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M392 176 V328" fill="none" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M387 320 L392 328 L397 320" fill="none" stroke="#504e49" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M304 364 H240" fill="none" stroke="#504e49" stroke-width="1.2"/>
+      <path d="M248 359 L240 364 L248 369" fill="none" stroke="#504e49" stroke-width="1.2" stroke-linecap="round"/>
+      <text x="760" y="140" fill="#6b6a64" font-size="14" font-family="TsangerJinKai02, serif">只把必要 WPS 操作放入页面主世界</text>
+      <text x="760" y="294" fill="#6b6a64" font-size="14" font-family="TsangerJinKai02, serif">下载和配置留在扩展侧</text>
+    </svg>
+    <figcaption>插件四层架构：页面主世界访问 WPS 内部状态，扩展侧处理下载、配置和用户确认。</figcaption>
+  </figure>
+
+  <h2>Manifest V3 权限建议</h2>
+  <pre><code>{
+  "manifest_version": 3,
+  "permissions": ["scripting", "activeTab", "downloads", "storage"],
+  "host_permissions": ["https://www.kdocs.cn/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" },
+  "content_scripts": [{
+    "matches": ["https://www.kdocs.cn/*"],
+    "js": ["content-bridge.js"],
+    "run_at": "document_idle"
+  }]
+}</code></pre>
+
+  <h2>模块拆分</h2>
+  <table class="kami-table compact">
+    <thead>
+      <tr>
+        <th>模块</th>
+        <th>职责</th>
+        <th>从现有脚本迁移的内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>core/table-reader</code></td><td>表头识别、读取行、生成 plan</td><td>表格 native API 与 DOM fallback</td></tr>
+      <tr><td><code>core/name-rules</code></td><td>命名模板、日期/箱数解析、文件名清洗</td><td><code>sanitizeFilename()</code>、target 生成逻辑</td></tr>
+      <tr><td><code>core/attachment-resolver</code></td><td>读取 link runs、hyperlink、probe 结果，输出附件映射</td><td><code>makeAutoAttachmentMap()</code> 与 diagnostics</td></tr>
+      <tr><td><code>core/wps-mutator</code></td><td>调用 WPS 命令更新显示名和附件对象名</td><td><code>range.setFormula</code> 与附件 name API</td></tr>
+      <tr><td><code>background-downloads</code></td><td>下载队列、重名策略、失败监听</td><td>替代页面 <code>&lt;a download&gt;</code> 触发下载</td></tr>
+      <tr><td><code>reporting</code></td><td>预览、执行结果、异常报告、回滚记录</td><td>各类 <code>report*</code> 函数</td></tr>
+    </tbody>
+  </table>
+
+  <h2>为什么不能只做 content script</h2>
+  <p>Chrome content script 默认在隔离环境运行，不能天然访问页面 JS 里的 <code>window.APP</code>、<code>sheetData</code>、<code>getTextLinkRuns</code> 等对象。可以使用运行时注入或主世界脚本，但主世界也有被页面影响的风险。因此页面脚本应尽量薄，只暴露 <code>scan</code>、<code>resolve</code>、<code>mutate</code> 这类受控命令。</p>
+
+  <div class="callout">
+    插件的工程重点不是“能注入代码”，而是把可变的 WPS 内部依赖包起来：一旦接口变动，用户看到的是明确诊断，而不是控制台里一串不可读的异常。
+  </div>
+</section>
+
+<!-- ═════════════ Chapter 04：结论 ═════════════ -->
+<section class="chapter">
+  <div class="chapter-num">04 · Adaptation & Workflow</div>
+  <h1>通用表格适配与执行流程</h1>
+
+  <p class="lead">插件可以不固定 C 列和 F 列，但必须把“识别列、识别规则、异常处理”从脚本常量变成用户可理解的配置。它的通用性来自配置和预览，不来自猜测。</p>
+
+  <h2>换文档后的适配规则</h2>
+  <table class="kami-table striped">
+    <thead>
+      <tr>
+        <th>场景</th>
+        <th>插件行为</th>
+        <th>能否自动执行</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>列顺序变化，但表头仍可识别</td>
+        <td>按表头别名定位列，预览显示命中的列名和列号</td>
+        <td>可以</td>
+      </tr>
+      <tr>
+        <td>表头叫法变化，例如“箱标附件”“预约文件”</td>
+        <td>用户在配置中加入别名，之后同类表格自动识别</td>
+        <td>配置后可以</td>
+      </tr>
+      <tr>
+        <td>没有表头，或表头合并/跨行</td>
+        <td>进入手动映射模式：用户指定货件号、时间、箱数、附件列</td>
+        <td>确认后可以</td>
+      </tr>
+      <tr>
+        <td>附件 ID 无法从 link runs 或接口中读取</td>
+        <td>生成诊断报告，停止改名；禁止靠猜测直接执行</td>
+        <td>不可以</td>
+      </tr>
+      <tr>
+        <td>只能按下载点击顺序推断 ID</td>
+        <td>标记为高风险，需要用户逐项或批量确认</td>
+        <td>确认后谨慎执行</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>用户执行步骤</h2>
+  <ol>
+    <li>打开目标 KDocs 表格，等待页面完全加载。</li>
+    <li>点击扩展图标，插件检测当前页面是否为可编辑 WPS 表格。</li>
+    <li>点击“扫描表格”，生成任务计划；界面显示行号、货件号、附件类型、源名称、目标名称。</li>
+    <li>检查列识别结果。如果列名没有命中，在配置里补充表头别名或手动选择列。</li>
+    <li>点击“匹配附件 ID”，插件读取 link runs、hyperlink 与附件接口，生成 attachment map。</li>
+    <li>查看异常项。所有 <code>missing-id</code> 或低置信度匹配必须处理完，才能进入执行。</li>
+    <li>点击“执行”，插件先更新表格显示名，再改 WPS 附件对象名，最后进入下载队列。</li>
+    <li>完成后导出执行报告。报告包含原值、目标值、附件 ID、下载状态、失败原因和回滚所需信息。</li>
+  </ol>
+
+  <h2>默认配置</h2>
+  <div class="two-col">
+    <div class="takeaway">
+      <div class="takeaway-label">命名模板</div>
+      <p><strong>外箱标</strong>：<code>外箱标-货件号-箱数箱</code></p>
+      <p><strong>预约信</strong>：<code>预约信-货件号-时间</code></p>
+      <p><strong>扩展名</strong>：默认 <code>.pdf</code>，如下载接口返回其他扩展名则以接口为准。</p>
+    </div>
+    <div class="takeaway">
+      <div class="takeaway-label">扫描与下载</div>
+      <p><strong>最大扫描</strong>：<code>10000</code> 行、<code>60</code> 列。</p>
+      <p><strong>空行停止</strong>：连续空行达到阈值后停止。</p>
+      <p><strong>下载节流</strong>：默认 <code>700ms</code>，大表可提高。</p>
+    </div>
+  </div>
+
+  <div class="takeaway">
+    <div class="takeaway-label">关键产品判断</div>
+    “完美运行”的定义不应是插件永远不问用户，而是插件能清楚地区分：哪些可以自动执行，哪些需要补配置，哪些必须停止。这个判断比多写几个 fallback 更重要。
+  </div>
+</section>
+
+<!-- ═════════════ Chapter 05：附录 ═════════════ -->
+<section class="chapter">
+  <div class="chapter-num">05 · Risk & Roadmap</div>
+  <h1>风险、回滚与实施路线</h1>
+
+  <p class="lead">第一版目标是内部自用稳定，而不是立即上架商店。先把控制台脚本变成可重复、可配置、可预览的扩展，再逐步补下载体验和历史记录。</p>
+
+  <h2>风险与控制</h2>
+  <table class="kami-table compact">
+    <thead>
+      <tr>
+        <th>风险</th>
+        <th>表现</th>
+        <th>控制方式</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>WPS 内部 API 变动</td>
+        <td><code>getTextLinkRuns</code>、<code>range.setFormula</code> 或附件接口失效</td>
+        <td>保留多路径探测与报告，失败时给出断点位置</td>
+      </tr>
+      <tr>
+        <td>附件 ID 误匹配</td>
+        <td>文件名改到错误附件上</td>
+        <td>引入置信度；顺序匹配默认需要确认</td>
+      </tr>
+      <tr>
+        <td>批量下载被浏览器限制</td>
+        <td>下载中断、重名、用户被浏览器提示拦截</td>
+        <td>service worker 队列、节流、失败重试、清晰提示</td>
+      </tr>
+      <tr>
+        <td>权限过宽</td>
+        <td>用户不敢安装或浏览器提示过重</td>
+        <td>只请求 KDocs 域名与必要权限；优先 <code>activeTab</code></td>
+      </tr>
+      <tr>
+        <td>部分执行失败</td>
+        <td>表格显示名已改，附件名或下载失败</td>
+        <td>执行前写回滚记录；结果报告逐项列出状态</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>回滚记录</h2>
+  <p>所有会改远端数据的动作都要在执行前记录旧值：原单元格文本、原 <code>kw:annex</code> 地址、原附件对象名、新目标名、附件 ID、行列位置、执行状态。第一版至少导出 JSON 报告；第二版可以增加“按上次记录恢复名称”。</p>
+
+  <h2>开发阶段</h2>
+  <ol>
+    <li><strong>页面内核化</strong>：把当前 <code>WPSBatch</code> 拆成 scan、resolve、mutate、rename、download、report 六类 API。</li>
+    <li><strong>最小扩展</strong>：popup 提供扫描、执行、复制报告；content script 完成页面桥接。</li>
+    <li><strong>下载迁移</strong>：用 <code>chrome.downloads</code> 接管下载队列、文件名、失败监听和重名策略。</li>
+    <li><strong>配置与历史</strong>：加入表头别名、命名模板、扫描上限、下载目录、执行历史。</li>
+    <li><strong>内部分发</strong>：先以解压扩展或企业策略安装使用，暂不优先上 Chrome Web Store。</li>
+  </ol>
+
+  <h2>最低测试集</h2>
+  <ul>
+    <li>当前已跑通的测试表。</li>
+    <li>附件列不在 C/F 的表格。</li>
+    <li>至少 500 行、1000 个附件任务的大表。</li>
+    <li>缺失附件、只读页面、禁止下载页面。</li>
+    <li>表头别名变化，例如“箱标附件”“预约文件”。</li>
+    <li>名称含多余文字，例如“测试的”。</li>
+    <li>WPS 页面刚打开未完全加载时点击扩展。</li>
+    <li>执行中刷新、断网或单个附件接口失败。</li>
+  </ul>
+
+  <h2>A. 参考资料</h2>
+  <ul>
+    <li><a href="https://developer.chrome.com/docs/extensions/reference/scripting/">Chrome 官方文档：chrome.scripting API</a>，用于运行时注入脚本，需声明 <code>scripting</code> 权限并获得目标页面权限。</li>
+    <li><a href="https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts">Chrome 官方文档：Manifest content scripts</a>，说明 content script 的匹配、注入时机与执行环境。</li>
+    <li><a href="https://developer.chrome.com/docs/extensions/mv3/messaging">Chrome 官方文档：Message passing</a>，说明扩展各脚本之间的消息通信方式。</li>
+    <li><a href="https://developer.chrome.com/docs/extensions/reference/api/downloads">Chrome 官方文档：chrome.downloads API</a>，用于程序化发起、监控和管理下载。</li>
+  </ul>
+
+  <h2>B. 术语表</h2>
+  <p><strong>Page Kernel</strong>：注入到 WPS 页面主世界的业务内核，负责访问 <code>window.APP</code> 和 WPS 内部数据。</p>
+  <p><strong>Attachment Map</strong>：以附件类型和货件号为键，记录附件 ID、目标名称、原始名称和诊断状态的映射。</p>
+  <p><strong>Link Runs</strong>：WPS 单元格富文本链接信息，通常包含附件的 <code>kw:annex</code> 地址或可解析的子文件 ID。</p>
+  <p><strong>低置信度匹配</strong>：无法通过单元格链接直接确认，只能通过顺序或历史点击推断的附件匹配结果。</p>
+
+  <h2>C. 结论</h2>
+  <p>建议立即进入第一阶段：先把脚本拆成页面内核 API，并保留现有控制台入口作为回归测试工具。只要扫描、匹配、更新、改名、下载都能通过同一套结构化结果返回，插件外壳就会变得很自然；反过来，如果先做 UI，再把 4493 行脚本整体塞进去，后续每一次 WPS 接口变化都会变成维护成本。</p>
+</section>
+
+</body>
+</html>

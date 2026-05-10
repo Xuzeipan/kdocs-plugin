@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "WPS Batch Rename & Download",
+  "version": "0.1.0",
+  "description": "WPS表格附件批量改名和下载助手",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.kdocs.cn/*",
+    "https://kdocs.cn/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.kdocs.cn/*",
+        "https://kdocs.cn/*"
+      ],
+      "js": [
+        "src/content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/wps-batch-rename-download.js",
+        "src/page-bridge.js"
+      ],
+      "matches": [
+        "https://www.kdocs.cn/*",
+        "https://kdocs.cn/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "WPS Batch",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}

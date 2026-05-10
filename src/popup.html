@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=540">
+<title>WPS Batch</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Status Bar -->
+  <div id="status-bar">
+    <div class="status-row">
+      <span class="status-label">页面</span>
+      <span id="status-page" class="status-badge status-unknown">—</span>
+      <span class="status-label">Bridge</span>
+      <span id="status-bridge" class="status-badge status-unknown">—</span>
+      <span class="status-label">APP</span>
+      <span id="status-app" class="status-badge status-unknown">—</span>
+      <span id="status-sheet-name" class="status-hint"></span>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div id="toolbar">
+    <button id="btn-check" class="btn btn-sm">检查页面</button>
+    <button id="btn-scan" class="btn btn-sm" disabled>扫描</button>
+    <button id="btn-match" class="btn btn-sm" disabled>匹配附件</button>
+    <button id="btn-execute" class="btn btn-primary btn-sm" disabled>执行</button>
+    <button id="btn-report" class="btn btn-sm" disabled>复制报告</button>
+  </div>
+
+  <!-- Loading indicator -->
+  <div id="loading" class="hidden">
+    <span id="loading-text"></span>
+    <div class="spinner"></div>
+  </div>
+
+  <!-- Error banner -->
+  <div id="error-banner" class="hidden">
+    <span id="error-text"></span>
+    <button id="error-dismiss" class="btn-close">&times;</button>
+  </div>
+
+  <!-- Scan Section -->
+  <section id="scan-section" class="section hidden">
+    <div class="section-header">
+      <h3>扫描结果</h3>
+      <span id="scan-summary" class="summary"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="preview-table">
+        <thead>
+          <tr>
+            <th class="col-row">行号</th>
+            <th class="col-type">类型</th>
+            <th class="col-source">原文件名</th>
+            <th class="col-target">目标文件名</th>
+            <th class="col-status">状态</th>
+          </tr>
+        </thead>
+        <tbody id="preview-body"></tbody>
+      </table>
+    </div>
+    <div id="preview-empty" class="empty-hint hidden">无预览数据</div>
+  </section>
+
+  <!-- Match Section -->
+  <section id="match-section" class="section hidden">
+    <div class="section-header">
+      <h3>附件匹配</h3>
+    </div>
+    <div id="match-summary" class="match-grid">
+      <div class="match-item match-matched">
+        <span class="match-count" id="match-matched-count">0</span>
+        <span class="match-label">已匹配</span>
+      </div>
+      <div class="match-item match-missing">
+        <span class="match-count" id="match-missing-count">0</span>
+        <span class="match-label">缺失</span>
+      </div>
+      <div class="match-item match-risky">
+        <span class="match-count" id="match-risky-count">0</span>
+        <span class="match-label">顺序兜底</span>
+      </div>
+    </div>
+    <div id="match-risk-level" class="risk-badge"></div>
+
+    <!-- Missing Items -->
+    <div id="missing-items-wrap" class="hidden">
+      <h4 class="subhead subhead-error">缺失附件</h4>
+      <div class="table-wrap">
+        <table class="risk-table">
+          <thead>
+            <tr><th>类型</th><th>货件号</th><th>原文本</th><th>目标名</th></tr>
+          </thead>
+          <tbody id="missing-items-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Risky Items -->
+    <div id="risky-items-wrap" class="hidden">
+      <h4 class="subhead subhead-warn">顺序兜底匹配（需确认）</h4>
+      <div class="table-wrap">
+        <table class="risk-table">
+          <thead>
+            <tr><th>类型</th><th>货件号</th><th>匹配文本</th><th>目标名</th></tr>
+          </thead>
+          <tbody id="risky-items-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Execute Section -->
+  <section id="execute-section" class="section hidden">
+    <div class="section-header">
+      <h3>执行选项</h3>
+    </div>
+    <div id="execute-options" class="options-list">
+      <label class="option-row">
+        <input type="checkbox" id="opt-cells" checked>
+        <span>更新表格显示名</span>
+      </label>
+      <label class="option-row">
+        <input type="checkbox" id="opt-rename" checked>
+        <span>修改 WPS 附件对象名</span>
+      </label>
+      <label class="option-row">
+        <input type="checkbox" id="opt-download" checked>
+        <span>下载附件</span>
+      </label>
+      <label id="label-order-risk" class="option-row option-warn hidden">
+        <input type="checkbox" id="opt-allow-risk">
+        <span>我已确认顺序兜底匹配正确</span>
+      </label>
+    </div>
+
+    <!-- Execute Result -->
+    <div id="execute-result" class="hidden">
+      <h4 class="subhead">执行结果</h4>
+      <div class="match-grid">
+        <div class="match-item match-matched">
+          <span class="match-count" id="exec-cells-updated">0</span>
+          <span class="match-label">单元格更新</span>
+        </div>
+        <div class="match-item match-matched">
+          <span class="match-count" id="exec-renamed">0</span>
+          <span class="match-label">附件改名</span>
+        </div>
+        <div class="match-item match-matched">
+          <span class="match-count" id="exec-downloaded">0</span>
+          <span class="match-label">已下载</span>
+        </div>
+        <div class="match-item match-missing">
+          <span class="match-count" id="exec-errors">0</span>
+          <span class="match-label">错误</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Report Section -->
+  <section id="report-section" class="section hidden">
+    <div class="section-header">
+      <h3>报告</h3>
+      <span id="report-hint" class="summary"></span>
+    </div>
+    <pre id="report-text" class="report-pre"></pre>
+    <div id="report-empty" class="empty-hint hidden">暂无报告，请先执行扫描或匹配</div>
+  </section>
+
+  <div id="footer">
+    <span>WPS Batch v0.1.0</span>
+  </div>
+
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
