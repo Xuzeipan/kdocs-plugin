@@ -92,6 +92,11 @@
     </div>
     <div id="download-status-bar" class="download-status"></div>
 
+    <div class="rename-row">
+      <label class="field-label">手动指定范围 <span class="label-hint">（可选，自动选区失败时使用）</span></label>
+      <input type="text" id="input-download-range-override" class="field-input" placeholder="例如 C3:C9 或 C3,C5,C8，可在自动读取选区失败时使用">
+    </div>
+
     <div class="rename-actions">
       <button id="btn-preview-download" class="btn">预览下载列表</button>
     </div>
@@ -144,7 +149,7 @@
 
     <div class="rename-row">
       <label class="field-label">手动指定范围 <span class="label-hint">（可选，自动选区失败时使用）</span></label>
-      <input type="text" id="input-range-override" class="field-input" placeholder="例如 F2:F20，可在自动读取选区失败时使用">
+      <input type="text" id="input-range-override" class="field-input" placeholder="例如 C3:C9 或 C3,C5,C8，可在自动读取选区失败时使用">
     </div>
 
     <div id="diagnose-wrap" class="diagnose-wrap hidden">

@@ -41,6 +41,7 @@
   var downloadSection = $('download-section');
   var downloadRangeHint = $('download-range-hint');
   var downloadStatusBar = $('download-status-bar');
+  var inputDownloadRangeOverride = $('input-download-range-override');
   var btnPreviewDownload = $('btn-preview-download');
   var downloadPreviewWrap = $('download-preview-wrap');
   var downloadPreviewSummary = $('download-preview-summary');
@@ -588,9 +589,9 @@
         // Check if it's a selection failure
         if (/无法读取当前选区/.test(errMsg)) {
           if (hasManualRange) {
-            showError('手动范围格式不正确，请输入类似 F2:F20 或 A1:C3');
+            showError('手动范围格式不正确，请输入类似 C3:C9 或 C3,C5,C8');
           } else {
-            showError('无法自动读取当前选区。请在"手动指定范围"中输入类似 F2:F20，或复制选区诊断报告给开发者。');
+            showError('无法自动读取当前选区。请在"手动指定范围"中输入类似 C3:C9 或 C3,C5,C8，或复制选区诊断报告给开发者。');
           }
           diagnoseWrap.classList.remove('hidden');
         } else if (/无法反查附件/.test(errMsg)) {
@@ -754,7 +755,7 @@
       return;
     }
 
-    downloadStatusBar.textContent = '框选 WPS 表格中的附件单元格或填写手动范围，然后点击预览。下载使用附件当前显示名作为文件名';
+    downloadStatusBar.textContent = '框选 WPS 表格中的附件单元格，或在下方填写手动范围后点击预览。下载使用附件当前显示名作为文件名';
     downloadPreviewWrap.classList.add('hidden');
     downloadResult.classList.add('hidden');
     btnConfirmDownload.disabled = true;
@@ -770,13 +771,13 @@
     showLoading('准备下载列表...');
 
     try {
-      var opts = { rangeOverride: inputRangeOverride.value.trim() };
+      var opts = { rangeOverride: inputDownloadRangeOverride.value.trim() };
       var result = await sendCommand('prepareSelectedAttachmentDownloads', opts);
 
       if (!result.ok) {
         var errMsg = result.error || '准备下载失败';
         if (/无法读取当前选区/.test(errMsg)) {
-          showError('无法自动读取当前选区。请填写手动范围，如 C3:C9');
+          showError('无法自动读取当前选区。请填写手动范围，如 C3:C9 或 C3,C5,C8');
         } else {
           showError(errMsg);
         }
@@ -932,6 +933,14 @@
   btnConfirmRename.addEventListener('click', doConfirmRename);
   btnConfirmDownload.addEventListener('click', doConfirmDownload);
   btnPreviewDownload.addEventListener('click', doPreviewDownload);
+
+  // Clear old download preview when user changes the range
+  inputDownloadRangeOverride.addEventListener('input', function () {
+    state.downloadItems = [];
+    downloadPreviewWrap.classList.add('hidden');
+    downloadResult.classList.add('hidden');
+    btnConfirmDownload.disabled = true;
+  });
   btnDiagnoseSelection.addEventListener('click', doDiagnoseSelection);
   btnDiagnoseAttachment.addEventListener('click', doDiagnoseSelectedAttachmentCells);
 
