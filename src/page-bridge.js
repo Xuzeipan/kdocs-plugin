@@ -111,6 +111,10 @@
           result = await window.WPSBatch.diagnoseSelectedAttachmentCells(options);
           break;
 
+        case 'prepareSelectedAttachmentDownloads':
+          result = await window.WPSBatch.prepareSelectedAttachmentDownloads(options);
+          break;
+
         default:
           throw new Error('未识别的命令: ' + action);
       }

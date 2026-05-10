@@ -6912,6 +6912,122 @@
     };
   }
 
+  // ===== Selected Attachment Download Preparation =====
+
+  async function prepareSelectedAttachmentDownloads(options) {
+    options = options || {};
+    var rangeOverride = options.rangeOverride || "";
+
+    // Inspect selected cells
+    var inspectResult = await inspectSelectedAttachmentCellsAsync({ rangeOverride: rangeOverride });
+    if (!inspectResult.ok) {
+      return { ok: false, error: inspectResult.error, range: inspectResult.range, items: [], summary: {} };
+    }
+
+    var attachmentCells = [];
+    for (var i = 0; i < inspectResult.cells.length; i++) {
+      if (inspectResult.cells[i].isAttachment) attachmentCells.push(inspectResult.cells[i]);
+    }
+
+    if (!attachmentCells.length) {
+      return {
+        ok: false,
+        error: "当前范围没有识别到可改名附件，无法准备下载",
+        range: inspectResult.range,
+        items: [],
+        summary: {},
+      };
+    }
+
+    if (inspectResult.summary.nonAttachmentCount > 0) {
+      return {
+        ok: false,
+        error: "范围中有 " + inspectResult.summary.nonAttachmentCount + " 个非附件单元格，请只框选附件单元格",
+        range: inspectResult.range,
+        items: [],
+        summary: { nonAttachmentCount: inspectResult.summary.nonAttachmentCount },
+      };
+    }
+
+    var items = [];
+    var successCount = 0;
+    var errorCount = 0;
+    var delayMs = CONFIG.downloadDelayMs || 500;
+
+    for (var j = 0; j < attachmentCells.length; j++) {
+      var cell = attachmentCells[j];
+      var subFileId = (cell.attachmentMeta && cell.attachmentMeta.subFileId) || "";
+      // Always use current cell display text, never the original attachment file name
+      var displayName = cell.cellText.replace(/^📄/, "").trim();
+      var ext = (cell.attachmentMeta && cell.attachmentMeta.aType) || "pdf";
+      var rawFilename = sanitizeFilename(displayName);
+      var filename = ensureExt(rawFilename, "");
+      // ensureExt with empty URL falls back to CONFIG.defaultExt (.pdf). Override if aType differs.
+      if (!/\.[a-z0-9]{2,8}$/i.test(filename) || (cell.attachmentMeta && cell.attachmentMeta.aType && !filename.endsWith("." + cell.attachmentMeta.aType))) {
+        filename = rawFilename;
+        if (!/\.[a-z0-9]{2,8}$/i.test(filename)) filename = filename + "." + ext;
+      }
+
+      if (CONFIG.debug) {
+        log("[download-prep]", cell.colName + (cell.rowNumber != null ? cell.rowNumber : (cell.rowIndex + 1)),
+          "cellText=" + cell.cellText,
+          "displayName=" + displayName,
+          "meta.fileName=" + ((cell.attachmentMeta && cell.attachmentMeta.fileName) || ""),
+          "filename=" + filename);
+      }
+
+      var item = {
+        rowIndex: cell.rowIndex,
+        rowNumber: cell.rowNumber,
+        colIndex: cell.colIndex,
+        colName: cell.colName,
+        address: cell.colName + (cell.rowNumber != null ? cell.rowNumber : (cell.rowIndex + 1)),
+        subFileId: subFileId,
+        displayName: displayName,
+        filename: filename,
+        downloadUrl: "",
+        status: "",
+        error: "",
+      };
+
+      if (!subFileId) {
+        item.status = "error";
+        item.error = "无附件 subFileId";
+        items.push(item);
+        errorCount++;
+        continue;
+      }
+
+      try {
+        var info = await resolveAttachmentDownloadUrl(subFileId);
+        item.downloadUrl = info.download_url || "";
+        item.status = "ready";
+        successCount++;
+        items.push(item);
+      } catch (e) {
+        item.status = "error";
+        item.error = e.message || String(e);
+        items.push(item);
+        errorCount++;
+      }
+
+      if (j < attachmentCells.length - 1) {
+        await sleep(delayMs);
+      }
+    }
+
+    return {
+      ok: true,
+      range: inspectResult.range,
+      items: items,
+      summary: {
+        total: items.length,
+        readyCount: successCount,
+        errorCount: errorCount,
+      },
+    };
+  }
+
   function createWpsBatchKernel() {
     var lastScanResult = null;
     var lastMatchResult = null;
@@ -7216,6 +7332,7 @@
     kernel.renameSelectedAttachmentCells = renameSelectedAttachmentCells;
     kernel.diagnoseSelectionApis = diagnoseSelectionApis;
     kernel.diagnoseSelectedAttachmentCells = diagnoseSelectedAttachmentCells;
+    kernel.prepareSelectedAttachmentDownloads = prepareSelectedAttachmentDownloads;
 
     return kernel;
   }
@@ -7240,6 +7357,7 @@
     renameSelectedAttachmentCells: function (rule) { return wpsBatchKernel.renameSelectedAttachmentCells(rule); },
     diagnoseSelectionApis: function () { return wpsBatchKernel.diagnoseSelectionApis(); },
     diagnoseSelectedAttachmentCells: function (options) { return wpsBatchKernel.diagnoseSelectedAttachmentCells(options); },
+    prepareSelectedAttachmentDownloads: function (options) { return wpsBatchKernel.prepareSelectedAttachmentDownloads(options); },
     // Legacy API — preserved for backward compatibility
     run,
     buildPlanFromTsv,

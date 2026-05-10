@@ -28,6 +28,7 @@
     <button id="btn-check" class="btn">检查页面</button>
     <button id="btn-scan" class="btn" disabled>扫描</button>
     <button id="btn-rename-selected" class="btn btn-primary" disabled>批量重命名附件</button>
+    <button id="btn-download-selected" class="btn btn-primary" disabled>批量下载附件</button>
   </div>
 
   <!-- Loading -->
@@ -80,6 +81,56 @@
         </table>
       </div>
       <div id="col-data-empty" class="empty-hint hidden">该列无数据</div>
+    </div>
+  </section>
+
+  <!-- Download Section -->
+  <section id="download-section" class="section hidden">
+    <div class="section-header">
+      <h3>批量下载</h3>
+      <span id="download-range-hint" class="summary"></span>
+    </div>
+    <div id="download-status-bar" class="download-status"></div>
+
+    <div class="rename-actions">
+      <button id="btn-preview-download" class="btn">预览下载列表</button>
+    </div>
+
+    <div id="download-preview-wrap" class="hidden">
+      <h4 class="subhead">下载预览</h4>
+      <div id="download-preview-summary" class="summary-row"></div>
+      <div class="table-wrap">
+        <table id="download-preview-table">
+          <thead>
+            <tr>
+              <th class="col-row-num">行</th>
+              <th class="col-addr">地址</th>
+              <th class="col-dl-name">下载文件名</th>
+              <th class="col-status">状态</th>
+            </tr>
+          </thead>
+          <tbody id="download-preview-body"></tbody>
+        </table>
+      </div>
+
+      <div id="download-confirm-wrap" class="rename-confirm">
+        <button id="btn-confirm-download" class="btn btn-primary" disabled>确认下载</button>
+        <span id="download-confirm-hint" class="confirm-hint"></span>
+      </div>
+    </div>
+
+    <div id="download-result" class="hidden">
+      <h4 class="subhead">下载结果</h4>
+      <div class="result-grid">
+        <div class="result-item result-ok">
+          <span class="result-count" id="download-queued-count">0</span>
+          <span class="result-label">已加入队列</span>
+        </div>
+        <div class="result-item result-err">
+          <span class="result-count" id="download-error-count">0</span>
+          <span class="result-label">失败</span>
+        </div>
+      </div>
     </div>
   </section>
 

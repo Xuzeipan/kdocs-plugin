@@ -371,3 +371,13 @@ body {
 
 .status-tag-ok { background: #d1fae5; color: #065f46; }
 .status-tag-error { background: #fee2e2; color: #991b1b; }
+
+/* ---- Download Section ---- */
+
+.download-status { font-size: 10px; color: #6b7280; margin-bottom: 6px; }
+
+.col-addr { width: 50px; }
+.col-dl-name { width: 60%; }
+
+#download-preview-wrap.hidden { display: none; }
+#download-result.hidden { display: none; }
