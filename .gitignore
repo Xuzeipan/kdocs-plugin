@@ -2,3 +2,7 @@
 .playwright-mcp/
 .claude/settings.local.json
 *.log
+
+# Build/package artifacts are generated for local delivery only.
+# Do not include extension zip packages in git commits.
+dist/
