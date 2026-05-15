@@ -381,3 +381,65 @@ body {
 
 #download-preview-wrap.hidden { display: none; }
 #download-result.hidden { display: none; }
+
+/* ---- Range Picker ---- */
+
+.range-input-row {
+  display: flex; gap: 5px; align-items: center;
+}
+
+.range-input-row .range-input {
+  flex: 1;
+}
+
+.btn-pick-range {
+  flex-shrink: 0;
+  color: #2563eb; border-color: #2563eb; background: #eff6ff;
+}
+
+.btn-pick-range:hover:not(:disabled) {
+  background: #dbeafe; border-color: #1d4ed8;
+}
+
+.btn-pick-range.is-active {
+  background: #dc2626; color: #fff; border-color: #dc2626;
+  animation: pulse-btn 1.2s ease-in-out infinite;
+}
+
+.btn-pick-range.is-active:hover:not(:disabled) {
+  background: #b91c1c; border-color: #b91c1c;
+}
+
+@keyframes pulse-btn {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.0); }
+}
+
+.range-picker-status {
+  margin-top: 3px; font-size: 10px; color: #dc2626; font-weight: 500;
+}
+
+.range-picker-status.hidden { display: none; }
+
+.range-chips {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 5px; min-height: 24px; align-items: center;
+}
+
+.range-chips.hidden { display: none; }
+
+.range-chip {
+  font-size: 10px; font-weight: 500;
+  padding: 2px 7px; border-radius: 10px;
+  background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe;
+  cursor: default; display: flex; align-items: center; gap: 4px;
+}
+
+.range-chip:hover { background: #dbeafe; }
+
+.range-chip .range-chip-remove {
+  font-size: 12px; line-height: 1; margin-left: 2px;
+  color: #93c5fd; cursor: pointer;
+}
+
+.range-chip .range-chip-remove:hover { color: #dc2626; }

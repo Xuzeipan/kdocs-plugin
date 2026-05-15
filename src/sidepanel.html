@@ -94,7 +94,12 @@
 
     <div class="rename-row">
       <label class="field-label">手动指定范围 <span class="label-hint">（可选，自动选区失败时使用）</span></label>
-      <input type="text" id="input-download-range-override" class="field-input" placeholder="例如 C3:C9 或 C3,C5,C8，可在自动读取选区失败时使用">
+      <div class="range-input-row">
+        <input type="text" id="input-download-range-override" class="field-input range-input" placeholder="例如 C3:C9 或 C3,C5,C8，可在自动读取选区失败时使用">
+        <button id="btn-pick-download-range" class="btn btn-sm btn-pick-range">选择范围</button>
+      </div>
+      <div id="range-picker-download-status" class="range-picker-status hidden">正在采集表格选区…</div>
+      <div id="range-chips-download" class="range-chips hidden"></div>
     </div>
 
     <div class="rename-actions">
@@ -149,7 +154,12 @@
 
     <div class="rename-row">
       <label class="field-label">手动指定范围 <span class="label-hint">（可选，自动选区失败时使用）</span></label>
-      <input type="text" id="input-range-override" class="field-input" placeholder="例如 C3:C9 或 C3,C5,C8，可在自动读取选区失败时使用">
+      <div class="range-input-row">
+        <input type="text" id="input-range-override" class="field-input range-input" placeholder="例如 C3:C9 或 C3,C5,C8，可在自动读取选区失败时使用">
+        <button id="btn-pick-rename-range" class="btn btn-sm btn-pick-range">选择范围</button>
+      </div>
+      <div id="range-picker-rename-status" class="range-picker-status hidden">正在采集表格选区…</div>
+      <div id="range-chips-rename" class="range-chips hidden"></div>
     </div>
 
     <div id="diagnose-wrap" class="diagnose-wrap hidden">

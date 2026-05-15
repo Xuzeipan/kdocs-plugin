@@ -934,15 +934,343 @@
   btnConfirmDownload.addEventListener('click', doConfirmDownload);
   btnPreviewDownload.addEventListener('click', doPreviewDownload);
 
-  // Clear old download preview when user changes the range
-  inputDownloadRangeOverride.addEventListener('input', function () {
-    state.downloadItems = [];
-    downloadPreviewWrap.classList.add('hidden');
-    downloadResult.classList.add('hidden');
-    btnConfirmDownload.disabled = true;
-  });
   btnDiagnoseSelection.addEventListener('click', doDiagnoseSelection);
   btnDiagnoseAttachment.addEventListener('click', doDiagnoseSelectedAttachmentCells);
+
+  // -------- Range Picker --------
+
+  function colIndexToLetters(colIndex) {
+    var letters = '';
+    var n = colIndex;
+    do {
+      letters = String.fromCharCode(65 + (n % 26)) + letters;
+      n = Math.floor(n / 26) - 1;
+    } while (n >= 0);
+    return letters;
+  }
+
+  function columnLettersToIndex(letters) {
+    var s = String(letters || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (!s) return -1;
+    var result = 0;
+    for (var i = 0; i < s.length; i++) {
+      result = result * 26 + (s.charCodeAt(i) - 64);
+    }
+    return result - 1;
+  }
+
+  function parseA1Token(text) {
+    var t = String(text || '').trim().toUpperCase();
+    if (!t) return null;
+
+    var cellMatch = t.match(/^([A-Z]+)(\d+)$/);
+    if (cellMatch) {
+      var col = columnLettersToIndex(cellMatch[1]);
+      var row = parseInt(cellMatch[2], 10) - 1;
+      if (col < 0 || row < 0) return null;
+      return { rowFrom: row, rowTo: row, colFrom: col, colTo: col, token: colIndexToLetters(col) + (row + 1) };
+    }
+
+    var rangeMatch = t.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+    if (!rangeMatch) return null;
+
+    var col1 = columnLettersToIndex(rangeMatch[1]);
+    var row1 = parseInt(rangeMatch[2], 10) - 1;
+    var col2 = columnLettersToIndex(rangeMatch[3]);
+    var row2 = parseInt(rangeMatch[4], 10) - 1;
+
+    if (col1 < 0 || row1 < 0 || col2 < 0 || row2 < 0) return null;
+
+    var rf = Math.min(row1, row2), rt = Math.max(row1, row2);
+    var cf = Math.min(col1, col2), ct = Math.max(col1, col2);
+
+    var addr = colIndexToLetters(cf) + (rf + 1);
+    if (rf !== rt || cf !== ct) addr += ':' + colIndexToLetters(ct) + (rt + 1);
+    return { rowFrom: rf, rowTo: rt, colFrom: cf, colTo: ct, token: addr };
+  }
+
+  function containsRange(a, b) {
+    return a.rowFrom <= b.rowFrom && a.rowTo >= b.rowTo &&
+           a.colFrom <= b.colFrom && a.colTo >= b.colTo;
+  }
+
+  function formatA1Range(rowFrom, rowTo, colFrom, colTo) {
+    var col1 = colIndexToLetters(colFrom);
+    var col2 = colIndexToLetters(colTo);
+    var r1 = rowFrom + 1;
+    var r2 = rowTo + 1;
+    if (col1 === col2 && r1 === r2) return col1 + r1;
+    return col1 + r1 + ':' + col2 + r2;
+  }
+
+  var rangePicker = {
+    activeKind: null,
+    pollTimer: null,
+    renameTokens: [],
+    downloadTokens: [],
+    baselineToken: null,
+    lastSeenToken: null,
+    startedAt: 0,
+  };
+
+  var btnPickRenameRange = $('btn-pick-rename-range');
+  var btnPickDownloadRange = $('btn-pick-download-range');
+  var rangePickerRenameStatus = $('range-picker-rename-status');
+  var rangePickerDownloadStatus = $('range-picker-download-status');
+  var rangeChipsRename = $('range-chips-rename');
+  var rangeChipsDownload = $('range-chips-download');
+
+  function tokensKey(kind) {
+    return kind === 'rename' ? 'renameTokens' : 'downloadTokens';
+  }
+
+  function getPickerElements(kind) {
+    if (kind === 'rename') {
+      return {
+        btn: btnPickRenameRange,
+        status: rangePickerRenameStatus,
+        chips: rangeChipsRename,
+        input: inputRangeOverride,
+      };
+    }
+    return {
+      btn: btnPickDownloadRange,
+      status: rangePickerDownloadStatus,
+      chips: rangeChipsDownload,
+      input: inputDownloadRangeOverride,
+    };
+  }
+
+  function normalizeToken(text) {
+    var parsed = parseA1Token(text);
+    return parsed ? parsed.token : null;
+  }
+
+  function addRangeToken(kind, token) {
+    var newRange = parseA1Token(token);
+    if (!newRange) return false;
+    var key = tokensKey(kind);
+    var tokens = rangePicker[key];
+
+    for (var i = tokens.length - 1; i >= 0; i--) {
+      var existing = parseA1Token(tokens[i]);
+      if (!existing) {
+        tokens.splice(i, 1);
+        continue;
+      }
+      // Exact same token
+      if (existing.token === newRange.token) return false;
+      // Existing covers new → new is redundant
+      if (containsRange(existing, newRange)) return false;
+      // New covers existing → remove existing
+      if (containsRange(newRange, existing)) {
+        tokens.splice(i, 1);
+      }
+    }
+
+    tokens.push(newRange.token);
+    syncInputFromTokens(kind);
+    renderRangeChips(kind);
+    return true;
+  }
+
+  function removeRangeToken(kind, index) {
+    var key = tokensKey(kind);
+    var tokens = rangePicker[key];
+    if (index < 0 || index >= tokens.length) return;
+    tokens.splice(index, 1);
+    syncInputFromTokens(kind);
+    renderRangeChips(kind);
+  }
+
+  function syncInputFromTokens(kind) {
+    var key = tokensKey(kind);
+    var el = getPickerElements(kind).input;
+    el.value = rangePicker[key].join(',');
+    // Fire input event so existing change listeners work
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function syncTokensFromInput(kind) {
+    var key = tokensKey(kind);
+    var el = getPickerElements(kind).input;
+    var raw = el.value.trim();
+    if (!raw) {
+      rangePicker[key] = [];
+      renderRangeChips(kind);
+      return;
+    }
+    var parts = raw.split(/[,，]/);
+    var tokens = [];
+    for (var i = 0; i < parts.length; i++) {
+      var parsed = parseA1Token(parts[i]);
+      if (parsed && tokens.indexOf(parsed.token) === -1) tokens.push(parsed.token);
+    }
+    rangePicker[key] = tokens;
+    renderRangeChips(kind);
+  }
+
+  function renderRangeChips(kind) {
+    var els = getPickerElements(kind);
+    var tokens = rangePicker[tokensKey(kind)];
+    els.chips.innerHTML = '';
+
+    if (!tokens.length) {
+      els.chips.classList.add('hidden');
+      return;
+    }
+    els.chips.classList.remove('hidden');
+
+    tokens.forEach(function (token, index) {
+      var chip = document.createElement('span');
+      chip.className = 'range-chip';
+
+      var label = document.createElement('span');
+      label.textContent = token;
+      chip.appendChild(label);
+
+      var remove = document.createElement('span');
+      remove.className = 'range-chip-remove';
+      remove.textContent = '×';
+      remove.addEventListener('click', function (e) {
+        e.stopPropagation();
+        removeRangeToken(kind, index);
+      });
+      chip.appendChild(remove);
+
+      els.chips.appendChild(chip);
+    });
+  }
+
+  function setPickerActive(kind, active) {
+    var els = getPickerElements(kind);
+    if (active) {
+      els.btn.textContent = '停止选择';
+      els.btn.classList.add('is-active');
+      els.status.classList.remove('hidden');
+    } else {
+      els.btn.textContent = '选择范围';
+      els.btn.classList.remove('is-active');
+      els.status.classList.add('hidden');
+    }
+  }
+
+  async function readCurrentSelectedToken() {
+    try {
+      var result = await sendCommand('getSelectedRange', { rangeOverride: '' });
+      if (!result || result.ok === false) return null;
+      if (result.rowFrom == null || result.colFrom == null) return null;
+      return formatA1Range(result.rowFrom, result.rowTo != null ? result.rowTo : result.rowFrom,
+                          result.colFrom, result.colTo != null ? result.colTo : result.colFrom);
+    } catch (e) {
+      console.warn('[RangePicker] readCurrentSelectedToken failed:', e.message || e);
+      return null;
+    }
+  }
+
+  async function startRangePicker(kind) {
+    // If another picker is active, stop it first
+    if (rangePicker.activeKind && rangePicker.activeKind !== kind) {
+      stopRangePicker();
+    }
+
+    rangePicker.activeKind = kind;
+    rangePicker.startedAt = Date.now();
+    setPickerActive(kind, true);
+
+    // Sync tokens from current input before polling starts
+    syncTokensFromInput(kind);
+
+    // Capture current selection as baseline so it doesn't auto-populate
+    rangePicker.baselineToken = await readCurrentSelectedToken();
+    rangePicker.lastSeenToken = rangePicker.baselineToken;
+
+    // Start polling
+    if (rangePicker.pollTimer) {
+      clearInterval(rangePicker.pollTimer);
+    }
+    rangePicker.pollTimer = setInterval(function () {
+      pollSelectedRange();
+    }, 600);
+  }
+
+  function stopRangePicker() {
+    if (rangePicker.pollTimer) {
+      clearInterval(rangePicker.pollTimer);
+      rangePicker.pollTimer = null;
+    }
+    if (rangePicker.activeKind) {
+      setPickerActive(rangePicker.activeKind, false);
+      rangePicker.activeKind = null;
+    }
+    rangePicker.baselineToken = null;
+    rangePicker.lastSeenToken = null;
+    rangePicker.startedAt = 0;
+  }
+
+  async function pollSelectedRange() {
+    if (!rangePicker.activeKind) return;
+    var kind = rangePicker.activeKind;
+
+    try {
+      var result = await sendCommand('getSelectedRange', { rangeOverride: '' });
+
+      // Accept result if ok !== false AND has rowFrom/colFrom (tolerant of old format without ok field)
+      if (!result || result.ok === false) return;
+      if (result.rowFrom == null || result.colFrom == null) return;
+
+      var token = formatA1Range(result.rowFrom, result.rowTo != null ? result.rowTo : result.rowFrom,
+                               result.colFrom, result.colTo != null ? result.colTo : result.colFrom);
+
+      if (!token) return;
+
+      // Skip baseline — the selection that existed before the user started picking
+      if (token === rangePicker.baselineToken) return;
+
+      // Skip if unchanged from last poll
+      if (token === rangePicker.lastSeenToken) return;
+
+      rangePicker.lastSeenToken = token;
+      addRangeToken(kind, token);
+    } catch (e) {
+      console.warn('[RangePicker] getSelectedRange failed:', e.message || e);
+    }
+  }
+
+  function handleRangeInputChange(kind) {
+    syncTokensFromInput(kind);
+    // Clear download preview when the range changes
+    if (kind === 'download') {
+      state.downloadItems = [];
+      downloadPreviewWrap.classList.add('hidden');
+      downloadResult.classList.add('hidden');
+      btnConfirmDownload.disabled = true;
+    }
+  }
+
+  btnPickRenameRange.addEventListener('click', function () {
+    if (rangePicker.activeKind === 'rename') {
+      stopRangePicker();
+    } else {
+      startRangePicker('rename');
+    }
+  });
+
+  btnPickDownloadRange.addEventListener('click', function () {
+    if (rangePicker.activeKind === 'download') {
+      stopRangePicker();
+    } else {
+      startRangePicker('download');
+    }
+  });
+
+  inputRangeOverride.addEventListener('input', function () {
+    handleRangeInputChange('rename');
+  });
+
+  inputDownloadRangeOverride.addEventListener('input', function () {
+    handleRangeInputChange('download');
+  });
 
   // -------- Attachment Cell Deep Diagnosis --------
 
