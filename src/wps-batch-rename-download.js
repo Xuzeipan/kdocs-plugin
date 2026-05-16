@@ -408,14 +408,28 @@
     return "";
   }
 
+  function hasWpsCellReadApi() {
+    const app = window.APP;
+    if (!app) return false;
+    if (app.getCell || app.getUilCmdTool || app.util) return true;
+    try {
+      const sheet = app.getActiveSheet && app.getActiveSheet();
+      return !!(sheet && sheet.sheetData && sheet.sheetData.getCell);
+    } catch (_) {
+      return false;
+    }
+  }
+
   function tryWpsNativeCellRows(maxRows = CONFIG.maxTableRows, maxCols = CONFIG.maxTableCols) {
-    if (!window.APP || !window.APP.getCell) return [];
+    if (!hasWpsCellReadApi()) return [];
 
     const rows = [];
     let headerSeen = false;
+    let anyDataSeen = false;
     let dataSeenAfterHeader = false;
     let emptyStreak = 0;
     const stopAfterEmptyRows = Math.max(20, Number(CONFIG.stopAfterEmptyRows || 120));
+    const stopAfterLeadingEmptyRows = Math.max(200, stopAfterEmptyRows * 2);
 
     for (let row = 0; row < maxRows; row += 1) {
       const values = [];
@@ -430,11 +444,14 @@
       if (looksHeader) headerSeen = true;
       if (hasValue) {
         rows.push(values);
+        anyDataSeen = true;
         if (headerSeen && !looksHeader) dataSeenAfterHeader = true;
         emptyStreak = 0;
-      } else if (headerSeen) {
+      } else {
         emptyStreak += 1;
         if (dataSeenAfterHeader && emptyStreak >= stopAfterEmptyRows) break;
+        if (anyDataSeen && emptyStreak >= stopAfterEmptyRows) break;
+        if (!anyDataSeen && emptyStreak >= stopAfterLeadingEmptyRows) break;
       }
     }
 
@@ -591,34 +608,68 @@
     return [];
   }
 
+  function trimTableRows(rows) {
+    rows = (rows || []).filter((row) => Array.isArray(row) && row.some((cell) => cleanText(normalizeGridValue(cell))));
+    let lastUsedCol = -1;
+
+    for (const row of rows) {
+      for (let col = row.length - 1; col >= 0; col -= 1) {
+        if (cleanText(normalizeGridValue(row[col]))) {
+          lastUsedCol = Math.max(lastUsedCol, col);
+          break;
+        }
+      }
+    }
+
+    if (lastUsedCol < 0) return [];
+    return rows.map((row) => row.slice(0, lastUsedCol + 1));
+  }
+
   function buildPlanFromTableDataDirectly() {
-    const nativeRows = tryWpsNativeCellRows();
+    const nativeRows = trimTableRows(tryWpsNativeCellRows());
     let plan = buildPlanFromTableRows(nativeRows);
     if (plan.length) {
       log(`表格数据读取成功：WPS 原生单元格接口，生成任务 ${plan.length} 个。`);
       return { plan, source: "wps-native-cell-api", rows: nativeRows };
     }
+    let bestRowsResult = nativeRows.length
+      ? { plan, source: "wps-native-cell-api", rows: nativeRows }
+      : null;
 
-    const apiRows = tryWorkbookApiRows();
+    const apiRows = trimTableRows(tryWorkbookApiRows());
     plan = buildPlanFromTableRows(apiRows);
     if (plan.length) {
       log(`表格数据读取成功：workbook API，生成任务 ${plan.length} 个。`);
       return { plan, source: "workbook-api", rows: apiRows };
     }
+    if (!bestRowsResult && apiRows.length) {
+      bestRowsResult = { plan, source: "workbook-api", rows: apiRows };
+    }
 
     const records = extractCellLikeRecordsFromState();
-    const stateRows = rowsFromCellLikeRecords(records);
+    const stateRows = trimTableRows(rowsFromCellLikeRecords(records));
     plan = buildPlanFromTableRows(stateRows);
     if (plan.length) {
       log(`表格数据读取成功：内部单元格状态，生成任务 ${plan.length} 个。`);
       return { plan, source: "cell-state", rows: stateRows, records };
     }
+    if (!bestRowsResult && stateRows.length) {
+      bestRowsResult = { plan, source: "cell-state", rows: stateRows, records };
+    }
 
-    const domRows = extractRowsFromPlainText(document.body.innerText || document.body.textContent || "");
+    const domRows = trimTableRows(extractRowsFromPlainText(document.body.innerText || document.body.textContent || ""));
     plan = buildPlanFromTableRows(domRows);
     if (plan.length) {
       log(`表格数据读取成功：页面文本，生成任务 ${plan.length} 个。`);
       return { plan, source: "dom-text", rows: domRows };
+    }
+    if (!bestRowsResult && domRows.length) {
+      bestRowsResult = { plan, source: "dom-text", rows: domRows };
+    }
+
+    if (bestRowsResult) {
+      log(`表格行读取成功：${bestRowsResult.source}，但未匹配到旧业务任务。`);
+      return bestRowsResult;
     }
 
     return { plan: [], source: "none", rows: [], records };
@@ -1077,7 +1128,11 @@
         return tableResult.plan;
       }
       window.WPSBatch.lastTableReadResult = tableResult;
-      warn("没有直接读到表格行数据，退回到附件名解析。可运行 WPSBatch.reportTableState() 查看原因。");
+      if ((tableResult.rows || []).length) {
+        log("已读到表格行数据，但未生成旧业务任务；侧栏仍可浏览列头和单元格。");
+      } else {
+        warn("没有直接读到表格行数据，退回到附件名解析。可运行 WPSBatch.reportTableState() 查看原因。");
+      }
     }
 
     const domBucket = extractFromDomText();
@@ -5703,6 +5758,13 @@
       }],
     ];
 
+    function markSelectedRangeOk(range, method) {
+      if (!range) return range;
+      range.ok = true;
+      if (method) range.method = method;
+      return range;
+    }
+
     var lastError = null;
     for (var i = 0; i < attempts.length; i++) {
       var label = attempts[i][0];
@@ -5712,8 +5774,7 @@
         if (result) {
           var rangeInfo = extractRangeBoundsDeep(result, 3);
           if (rangeInfo && Number.isFinite(rangeInfo.rowFrom) && Number.isFinite(rangeInfo.colFrom)) {
-            rangeInfo.method = label;
-            return rangeInfo;
+            return markSelectedRangeOk(rangeInfo, label);
           }
 
           // Special handling: view.getSelection() may return windowInfo.selection array
@@ -5725,8 +5786,7 @@
                 var sel0 = wiSel.windowInfo.selection[0];
                 var sel0Range = extractRangeBoundsDeep(sel0, 3);
                 if (sel0Range && Number.isFinite(sel0Range.rowFrom) && Number.isFinite(sel0Range.colFrom)) {
-                  sel0Range.method = label + ".windowInfo.selection[0]";
-                  return sel0Range;
+                  return markSelectedRangeOk(sel0Range, label + ".windowInfo.selection[0]");
                 }
               }
             } catch (_) {}
@@ -5736,8 +5796,7 @@
                 var ac = wiSel.windowInfo.activeCell;
                 var acRange = extractRangeBoundsDeep(ac, 3);
                 if (acRange && Number.isFinite(acRange.rowFrom) && Number.isFinite(acRange.colFrom)) {
-                  acRange.method = label + ".windowInfo.activeCell";
-                  return acRange;
+                  return markSelectedRangeOk(acRange, label + ".windowInfo.activeCell");
                 }
               }
             } catch (_) {}
@@ -5747,8 +5806,7 @@
                 var dac = wiSel.activeCell;
                 var dacRange = extractRangeBoundsDeep(dac, 3);
                 if (dacRange && Number.isFinite(dacRange.rowFrom) && Number.isFinite(dacRange.colFrom)) {
-                  dacRange.method = label + ".activeCell";
-                  return dacRange;
+                  return markSelectedRangeOk(dacRange, label + ".activeCell");
                 }
               }
             } catch (_) {}
@@ -5761,7 +5819,7 @@
 
     var scannedRange = findSelectedRangeBySurfaceScan();
     if (scannedRange && Number.isFinite(scannedRange.rowFrom) && Number.isFinite(scannedRange.colFrom)) {
-      return scannedRange;
+      return markSelectedRangeOk(scannedRange, scannedRange.method);
     }
 
     return {
