@@ -6676,6 +6676,43 @@
     return { ok: true, parts: parts, referencedColumns: referencedColumns };
   }
 
+  function getRenameCellText(rowIndex, colIndex, columns) {
+    // Try direct cell read first
+    var value = getWpsCellText(rowIndex, colIndex);
+    if (value) return value;
+
+    // Look for nearest non-empty value above from scan data
+    if (columns) {
+      for (var i = 0; i < columns.length; i++) {
+        if (columns[i].index === colIndex) {
+          var col = columns[i];
+          if (col && col.values) {
+            var targetRowNumber = rowIndex + 1;
+            var best = '';
+            var bestRowNumber = 0;
+            for (var v = 0; v < col.values.length; v++) {
+              var cv = col.values[v];
+              if (cv.rowNumber <= targetRowNumber && cv.rowNumber > bestRowNumber && cv.value) {
+                best = cv.value;
+                bestRowNumber = cv.rowNumber;
+              }
+            }
+            if (best) return best;
+          }
+          break;
+        }
+      }
+    }
+
+    // Fallback: walk upward in the WPS grid (capped at 100 rows, don't cross header)
+    for (var r = rowIndex - 1; r >= 0 && (rowIndex - r) <= 100; r--) {
+      var v = getWpsCellText(r, colIndex);
+      if (v) return v;
+    }
+
+    return '';
+  }
+
   function renderRenameTemplateForRow(template, rowIndex, columns) {
     var parseResult = parseRenameTemplate(template, columns);
     if (!parseResult.ok) return parseResult;
@@ -6688,7 +6725,7 @@
       if (part.type === "text") {
         result += part.value;
       } else {
-        var value = getWpsCellText(rowIndex, part.columnIndex);
+        var value = getRenameCellText(rowIndex, part.columnIndex, columns);
         if (!value) {
           missingColumns.push(part.columnName);
         }
@@ -6859,7 +6896,7 @@
         var parts = [];
         for (var k = 0; k < columnIndexes.length; k++) {
           var ci = columnIndexes[k];
-          var value = getWpsCellText(rowIndex, ci);
+          var value = getRenameCellText(rowIndex, ci, columns);
           if (!value) {
             // Resolve column name for legacy path
             var colName = "";
