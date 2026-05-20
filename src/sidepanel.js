@@ -385,13 +385,20 @@
 
   function toggleRuleColumn(colIndex) {
     var pos = state.selectedColumnIndexes.indexOf(colIndex);
-    if (pos >= 0) {
-      state.selectedColumnIndexes.splice(pos, 1);
-    } else {
+    var isAdding = pos < 0;
+    var colName = '';
+    // Resolve column name before mutation
+    for (var i = 0; i < state.columns.length; i++) {
+      if (state.columns[i].index === colIndex) { colName = state.columns[i].name; break; }
+    }
+
+    if (isAdding) {
       state.selectedColumnIndexes.push(colIndex);
+    } else {
+      state.selectedColumnIndexes.splice(pos, 1);
     }
     renderSelectedChips();
-    autoUpdateTemplate();
+    autoUpdateTemplate(isAdding, colName);
 
     // Sync checkboxes
     var checkboxes = ruleColumnList.querySelectorAll('input[type="checkbox"]');
@@ -458,9 +465,57 @@
     return parts.join('-');
   }
 
-  function autoUpdateTemplate() {
+  function removeColumnTemplatePart(template, colName) {
+    var placeholder = '{' + colName + '}';
+    if (!template || template.indexOf(placeholder) === -1) return template;
+
+    var segments = template.split('-');
+    var remaining = [];
+
+    for (var i = 0; i < segments.length; i++) {
+      var seg = segments[i];
+      if (seg.indexOf(placeholder) === -1) {
+        remaining.push(seg);
+        continue;
+      }
+
+      // Count all {.*} placeholders in this segment
+      var allPlaceholders = seg.match(/\{[^}]+\}/g) || [];
+      if (allPlaceholders.length === 1) {
+        // Only one placeholder — it's the target → drop entire segment
+        continue;
+      }
+
+      // Multiple placeholders: conservatively remove only the target placeholder
+      var cleaned = seg.replace(placeholder, '');
+      if (cleaned) {
+        remaining.push(cleaned);
+      }
+    }
+
+    return remaining.join('-');
+  }
+
+  function autoUpdateTemplate(isAdding, colName) {
     if (state.templateDirty) {
-      // User has edited template; don't overwrite, but show hint
+      if (isAdding === true && colName) {
+        var placeholder = '{' + colName + '}';
+        // Append only if placeholder not already in template
+        if (inputTemplate.value.indexOf(placeholder) === -1) {
+          var current = inputTemplate.value.trim();
+          if (current) {
+            inputTemplate.value = current + '-' + placeholder;
+          } else {
+            inputTemplate.value = placeholder;
+          }
+        }
+      } else if (isAdding === false && colName) {
+        inputTemplate.value = removeColumnTemplatePart(inputTemplate.value, colName);
+      }
+
+      updateRulePreview();
+      updatePreviewButton();
+
       var auto = buildTemplateFromColumns();
       if (auto && auto !== inputTemplate.value) {
         btnResetTemplate.classList.remove('hidden');
