@@ -62,6 +62,8 @@
   var colChips = $('col-chips');
   var inputTemplate = $('input-template');
   var templateHint = $('template-hint');
+  var selectTimeFormat = $('select-time-format');
+  var inputCustomTimeFormat = $('input-custom-time-format');
   var rulePreviewText = $('rule-preview-text');
   var btnPreviewRename = $('btn-preview-rename');
   var btnResetTemplate = $('btn-reset-template');
@@ -85,6 +87,8 @@
     renamePreview: null,
     templateDirty: false, // true if user manually edited template
     downloadItems: [],
+    timeFormat: 'original',
+    customTimeFormat: '',
   };
 
   // -------- Helpers --------
@@ -451,6 +455,24 @@
 
   // -------- Template --------
 
+  function isTimeColumn(colName) {
+    return colName && (/时间/.test(colName) || /日期/.test(colName));
+  }
+
+  function getTimeFormat() {
+    if (state.timeFormat === 'custom') return state.customTimeFormat || '';
+    if (state.timeFormat === 'original') return '';
+    return state.timeFormat;
+  }
+
+  function buildColumnPlaceholder(colName) {
+    var fmt = getTimeFormat();
+    if (fmt && isTimeColumn(colName)) {
+      return '{' + colName + '|' + fmt + '}';
+    }
+    return '{' + colName + '}';
+  }
+
   function buildTemplateFromColumns() {
     if (!state.selectedColumnIndexes.length) return '';
     var indexMap = {};
@@ -460,34 +482,80 @@
     var parts = [];
     for (var j = 0; j < state.selectedColumnIndexes.length; j++) {
       var name = indexMap[state.selectedColumnIndexes[j]];
-      if (name) parts.push('{' + name + '}');
+      if (name) parts.push(buildColumnPlaceholder(name));
     }
     return parts.join('-');
   }
 
-  function removeColumnTemplatePart(template, colName) {
-    var placeholder = '{' + colName + '}';
-    if (!template || template.indexOf(placeholder) === -1) return template;
+  function splitTemplateSegments(template) {
+    // Split on '-' only outside { ... } so {时间|YYYY-MM-DD} stays intact
+    var segments = [];
+    var depth = 0;
+    var start = 0;
+    for (var i = 0; i < template.length; i++) {
+      if (template[i] === '{') depth++;
+      else if (template[i] === '}') depth--;
+      else if (template[i] === '-' && depth === 0) {
+        segments.push(template.slice(start, i));
+        start = i + 1;
+      }
+    }
+    segments.push(template.slice(start));
+    return segments;
+  }
 
-    var segments = template.split('-');
+  function getPlaceholderColumnName(placeholder) {
+    // placeholder is '{colName}' or '{colName|format}'
+    var inner = placeholder.slice(1, -1);
+    var pipeIdx = inner.indexOf('|');
+    return pipeIdx >= 0 ? inner.slice(0, pipeIdx).trim() : inner.trim();
+  }
+
+  function isColumnReferencedInTemplate(template, colName) {
+    if (!template) return false;
+    var placeholders = template.match(/\{[^}]+\}/g) || [];
+    for (var i = 0; i < placeholders.length; i++) {
+      if (getPlaceholderColumnName(placeholders[i]) === colName) return true;
+    }
+    return false;
+  }
+
+  function removeColumnTemplatePart(template, colName) {
+    if (!template) return template;
+
+    var segments = splitTemplateSegments(template);
     var remaining = [];
 
     for (var i = 0; i < segments.length; i++) {
       var seg = segments[i];
-      if (seg.indexOf(placeholder) === -1) {
+      var placeholders = seg.match(/\{[^}]+\}/g) || [];
+
+      // Check if any placeholder in this segment references the target column
+      var hasTarget = false;
+      for (var p = 0; p < placeholders.length; p++) {
+        if (getPlaceholderColumnName(placeholders[p]) === colName) {
+          hasTarget = true;
+          break;
+        }
+      }
+
+      if (!hasTarget) {
         remaining.push(seg);
         continue;
       }
 
-      // Count all {.*} placeholders in this segment
-      var allPlaceholders = seg.match(/\{[^}]+\}/g) || [];
-      if (allPlaceholders.length === 1) {
-        // Only one placeholder — it's the target → drop entire segment
+      if (placeholders.length === 1) {
+        // Only one placeholder, and it's the target → drop entire segment
         continue;
       }
 
-      // Multiple placeholders: conservatively remove only the target placeholder
-      var cleaned = seg.replace(placeholder, '');
+      // Multiple placeholders: conservatively remove only the target placeholder text
+      var cleaned = seg;
+      for (var q = 0; q < placeholders.length; q++) {
+        if (getPlaceholderColumnName(placeholders[q]) === colName) {
+          cleaned = cleaned.replace(placeholders[q], '');
+        }
+      }
       if (cleaned) {
         remaining.push(cleaned);
       }
@@ -499,9 +567,9 @@
   function autoUpdateTemplate(isAdding, colName) {
     if (state.templateDirty) {
       if (isAdding === true && colName) {
-        var placeholder = '{' + colName + '}';
-        // Append only if placeholder not already in template
-        if (inputTemplate.value.indexOf(placeholder) === -1) {
+        // Append only if column not already referenced in template
+        if (!isColumnReferencedInTemplate(inputTemplate.value, colName)) {
+          var placeholder = buildColumnPlaceholder(colName);
           var current = inputTemplate.value.trim();
           if (current) {
             inputTemplate.value = current + '-' + placeholder;
@@ -540,6 +608,33 @@
     updatePreviewButton();
   }
 
+  function updateTemplateTimeFormats() {
+    var val = inputTemplate.value;
+    if (!val) return;
+    var fmt = getTimeFormat();
+    // Find all {colName} or {colName|...} placeholders where colName is a time column
+    var re = /\{([^|}]+)(\|[^}]*)?\}/g;
+    var updated = val.replace(re, function (match, colName, existingFormat) {
+      colName = colName.trim();
+      if (!isTimeColumn(colName)) return match; // not a time column, leave unchanged
+      if (!fmt) return '{' + colName + '}'; // original → strip format
+      return '{' + colName + '|' + fmt + '}';
+    });
+    if (updated !== val) {
+      inputTemplate.value = updated;
+      updateRulePreview();
+    }
+  }
+
+  function updateTemplateHintText() {
+    var fmt = getTimeFormat();
+    if (fmt) {
+      templateHint.textContent = '时间列将按 ' + fmt + ' 格式化，可写作 {列名|YYYY-MM-DD}';
+    } else {
+      templateHint.textContent = '时间列使用原始值；如需格式化可写作 {列名|YYYY-MM-DD}';
+    }
+  }
+
   inputTemplate.addEventListener('input', function () {
     state.templateDirty = true;
     updateRulePreview();
@@ -547,6 +642,44 @@
   });
 
   btnResetTemplate.addEventListener('click', doResetTemplate);
+
+  selectTimeFormat.addEventListener('change', function () {
+    state.timeFormat = selectTimeFormat.value;
+    if (state.timeFormat === 'custom') {
+      inputCustomTimeFormat.classList.remove('hidden');
+      state.customTimeFormat = inputCustomTimeFormat.value;
+    } else {
+      inputCustomTimeFormat.classList.add('hidden');
+    }
+    if (state.templateDirty) {
+      // Update existing template in-place
+      updateTemplateTimeFormats();
+      updateTemplateHintText();
+      updatePreviewButton();
+    } else {
+      // Not dirty — regenerate from columns
+      var template = buildTemplateFromColumns();
+      inputTemplate.value = template;
+      updateRulePreview();
+      updatePreviewButton();
+      updateTemplateHintText();
+    }
+  });
+
+  inputCustomTimeFormat.addEventListener('input', function () {
+    state.customTimeFormat = inputCustomTimeFormat.value;
+    if (state.templateDirty) {
+      updateTemplateTimeFormats();
+      updateTemplateHintText();
+    } else if (state.timeFormat === 'custom') {
+      // Not dirty but custom format changed — regenerate
+      var template = buildTemplateFromColumns();
+      inputTemplate.value = template;
+      updateRulePreview();
+      updatePreviewButton();
+      updateTemplateHintText();
+    }
+  });
 
   function updateRulePreview() {
     var template = inputTemplate.value.trim();
@@ -588,6 +721,14 @@
     btnResetTemplate.classList.add('hidden');
     updateRulePreview();
     updatePreviewButton();
+
+    // Reset time format UI
+    selectTimeFormat.value = 'original';
+    state.timeFormat = 'original';
+    state.customTimeFormat = '';
+    inputCustomTimeFormat.value = '';
+    inputCustomTimeFormat.classList.add('hidden');
+    updateTemplateHintText();
 
     renamePreviewWrap.classList.add('hidden');
     renameResult.classList.add('hidden');

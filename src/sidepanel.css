@@ -288,6 +288,27 @@ body {
   font-size: 10px; color: #6b7280; margin-top: 2px;
 }
 
+/* ---- Time Format ---- */
+
+.time-format-row {
+  display: flex; gap: 5px; align-items: center;
+}
+
+.field-select {
+  padding: 4px 7px; font-size: 11px;
+  border: 1px solid #d1d5db; border-radius: 4px;
+  background: #fff; color: #374151;
+  outline: none; flex-shrink: 0;
+}
+
+.field-select:focus { border-color: #2563eb; }
+
+.time-format-custom {
+  flex: 1; padding: 4px 8px; font-size: 11px;
+}
+
+.time-format-custom.hidden { display: none; }
+
 .label-hint {
   font-size: 9px; color: #9ca3af; font-weight: 400;
 }

@@ -190,6 +190,22 @@
     </div>
 
     <div class="rename-row">
+      <label class="field-label">时间格式</label>
+      <div class="time-format-row">
+        <select id="select-time-format" class="field-select">
+          <option value="original">原始值</option>
+          <option value="M月D日">M月D日</option>
+          <option value="MM月DD日">MM月DD日</option>
+          <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+          <option value="YYYYMMDD">YYYYMMDD</option>
+          <option value="MMDD">MMDD</option>
+          <option value="custom">自定义</option>
+        </select>
+        <input type="text" id="input-custom-time-format" class="field-input time-format-custom hidden" placeholder="例如 YYYY-MM-DD">
+      </div>
+    </div>
+
+    <div class="rename-row">
       <label class="field-label">当前规则预览</label>
       <code id="rule-preview-text" class="rule-preview">—</code>
     </div>
