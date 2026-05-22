@@ -6649,12 +6649,24 @@
       if (match.index > lastIndex) {
         parts.push({ type: "text", value: template.slice(lastIndex, match.index) });
       }
-      var colName = match[1].trim();
+      var inner = match[1].trim();
+      // Support {colName|format}
+      var pipeIdx = inner.indexOf('|');
+      var colName, format;
+      if (pipeIdx >= 0) {
+        colName = inner.slice(0, pipeIdx).trim();
+        format = inner.slice(pipeIdx + 1).trim();
+      } else {
+        colName = inner;
+        format = '';
+      }
       var col = colMap[colName];
       if (!col) {
         return { ok: false, error: "模板引用了不存在的列: \"" + colName + "\"。可用列: " + columns.map(function (c2) { return c2.name; }).join("、") };
       }
-      parts.push({ type: "column", columnIndex: col.index, columnName: col.name, placeholder: match[0] });
+      var part = { type: "column", columnIndex: col.index, columnName: col.name, placeholder: match[0] };
+      if (format) part.format = format;
+      parts.push(part);
       if (referencedColumns.indexOf(col.index) < 0) {
         referencedColumns.push(col.index);
       }
@@ -6674,6 +6686,84 @@
     }
 
     return { ok: true, parts: parts, referencedColumns: referencedColumns };
+  }
+
+  function parseDateValue(value) {
+    if (!value) return null;
+    var text = (typeof value === 'string' ? value : String(value)).trim();
+    if (!text) return null;
+
+    // Already a Date-ish object from WPS
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
+    }
+
+    // Try 2026年5月21日 / 2026年05月21日
+    var m1 = text.match(/^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日$/);
+    if (m1) return { year: parseInt(m1[1], 10), month: parseInt(m1[2], 10), day: parseInt(m1[3], 10) };
+
+    // Try 5月21日 / 05月21日
+    var m2 = text.match(/^(\d{1,2})\s*月\s*(\d{1,2})\s*日$/);
+    if (m2) return { year: 0, month: parseInt(m2[1], 10), day: parseInt(m2[2], 10) };
+
+    // Try 2026-05-21 / 2026-5-21
+    var m3 = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m3) return { year: parseInt(m3[1], 10), month: parseInt(m3[2], 10), day: parseInt(m3[3], 10) };
+
+    // Try 2026/5/21 / 2026/05/21
+    var m4 = text.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+    if (m4) return { year: parseInt(m4[1], 10), month: parseInt(m4[2], 10), day: parseInt(m4[3], 10) };
+
+    // Try 2026.5.21 / 2026.05.21
+    var m5 = text.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})$/);
+    if (m5) return { year: parseInt(m5[1], 10), month: parseInt(m5[2], 10), day: parseInt(m5[3], 10) };
+
+    // Try 20260521 (8-digit compact)
+    var m6 = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (m6) {
+      var y = parseInt(m6[1], 10), mo = parseInt(m6[2], 10), d = parseInt(m6[3], 10);
+      if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return { year: y, month: mo, day: d };
+    }
+
+    // Try timestamp number (e.g. Excel serial date or unix ms)
+    var num = Number(value);
+    if (!isNaN(num) && num > 0) {
+      // Excel serial date (days since 1900-01-01, approx range 40000-50000 for 2010-2040)
+      if (num > 30000 && num < 100000) {
+        try {
+          // Excel epoch: 1899-12-30
+          var excelEpoch = new Date(1899, 11, 30);
+          var dt = new Date(excelEpoch.getTime() + Math.round((num - 1) * 86400000));
+          if (!isNaN(dt.getTime())) return { year: dt.getFullYear(), month: dt.getMonth() + 1, day: dt.getDate() };
+        } catch (_) {}
+      }
+      // Unix milliseconds (large number)
+      if (num > 1e12) {
+        var dt2 = new Date(num);
+        if (!isNaN(dt2.getTime())) return { year: dt2.getFullYear(), month: dt2.getMonth() + 1, day: dt2.getDate() };
+      }
+    }
+
+    return null;
+  }
+
+  function formatDateValue(value, format) {
+    if (!format) return value;
+    var date = parseDateValue(value);
+    // If no year parsed and format needs year, use current year as fallback
+    if (date && date.year === 0 && (/Y/i.test(format))) {
+      date.year = new Date().getFullYear();
+    }
+    if (!date) return value; // Return raw value if unparseable
+
+    var result = format;
+    result = result.replace(/YYYY/g, String(date.year));
+    result = result.replace(/YY/g, String(date.year).slice(-2));
+    result = result.replace(/MM/g, String(date.month).padStart(2, '0'));
+    result = result.replace(/M/g, String(date.month));
+    result = result.replace(/DD/g, String(date.day).padStart(2, '0'));
+    result = result.replace(/D/g, String(date.day));
+    return result;
   }
 
   function getRenameCellText(rowIndex, colIndex, columns) {
@@ -6728,6 +6818,10 @@
         var value = getRenameCellText(rowIndex, part.columnIndex, columns);
         if (!value) {
           missingColumns.push(part.columnName);
+        }
+        // Apply date format if specified
+        if (part.format && value) {
+          value = formatDateValue(value, part.format);
         }
         result += value || "";
       }
