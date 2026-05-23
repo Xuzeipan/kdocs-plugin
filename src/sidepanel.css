@@ -66,6 +66,14 @@ body {
 
 .btn-sm { padding: 3px 8px; font-size: 10px; }
 
+.btn-reset-flow {
+  color: #6b7280; border-color: #e5e7eb; background: #f9fafb;
+}
+
+.btn-reset-flow:hover:not(:disabled) {
+  color: #374151; border-color: #d1d5db; background: #f3f4f6;
+}
+
 .btn-close { background: none; border: none; font-size: 15px; cursor: pointer; color: #6b7280; line-height: 1; }
 
 /* ---- Loading / Errors ---- */
@@ -108,6 +116,10 @@ body {
 .section-header h3 { font-size: 12px; font-weight: 600; color: #111827; }
 .section-header.sub { margin-top: 8px; }
 .section-header.sub h4 { font-size: 11px; font-weight: 600; color: #374151; }
+
+.section-header-actions {
+  display: flex; align-items: center; gap: 6px;
+}
 
 .summary { font-size: 10px; color: #6b7280; }
 

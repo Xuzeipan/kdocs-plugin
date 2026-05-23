@@ -52,6 +52,9 @@
   var downloadQueuedCount = $('download-queued-count');
   var downloadErrorCount = $('download-error-count');
 
+  var btnResetRenameFlow = $('btn-reset-rename-flow');
+  var btnResetDownloadFlow = $('btn-reset-download-flow');
+
   var diagnoseWrap = $('diagnose-wrap');
   var btnDiagnoseSelection = $('btn-diagnose-selection');
   var btnDiagnoseAttachment = $('btn-diagnose-attachment');
@@ -702,22 +705,22 @@
 
   // -------- Rename Flow --------
 
-  async function doOpenRenamePanel() {
-    hideError(); hideInfo();
-    renameSection.classList.remove('hidden');
+  function resetRenameFlow(options) {
+    options = options || {};
 
-    if (!state.columns.length) {
-      renameStatusBar.textContent = '请先扫描表格';
-      return;
-    }
+    // Stop range picker if active for rename
+    if (rangePicker.activeKind === 'rename') stopRangePicker();
 
-    // Reset dirty flag when first opening
+    // Reset state
     state.templateDirty = false;
     state.selectedColumnIndexes = [];
+    state.renamePreview = null;
 
-    renameStatusBar.textContent = '框选 WPS 表格中的附件单元格，勾选下方列，填写命名规则后预览。当前仅修改表格内附件显示名';
-    renderRuleColumnList();
-    renderSelectedChips();
+    // Reset range tokens
+    rangePicker.renameTokens = [];
+    inputRangeOverride.value = '';
+
+    // Reset template
     inputTemplate.value = '';
     btnResetTemplate.classList.add('hidden');
     updateRulePreview();
@@ -731,14 +734,46 @@
     inputCustomTimeFormat.classList.add('hidden');
     updateTemplateHintText();
 
+    // Reset preview and result
+    renamePreviewBody.innerHTML = '';
+    renamePreviewSummary.textContent = '';
     renamePreviewWrap.classList.add('hidden');
     renameResult.classList.add('hidden');
+    renameSuccessCount.textContent = '0';
+    renameFailCount.textContent = '0';
     btnConfirmRename.disabled = true;
+    renameConfirmHint.textContent = '';
 
+    // Reset diagnose
+    diagnoseWrap.classList.add('hidden');
+    selectionDiagnosisWrap.classList.add('hidden');
+    selectionDiagnosisText.value = '';
+
+    // Reset status text
+    renameStatusBar.textContent = '框选 WPS 表格中的附件单元格，勾选下方列，填写命名规则后预览。当前仅修改表格内附件显示名';
+
+    // Re-render UI
+    renderRuleColumnList();
+    renderRangeChips('rename');
+    renderSelectedChips();
+    syncRuleColumnCheckboxes();
     updateClearButtonsVisibility();
 
-    // Scroll to rename section
-    renameSection.scrollIntoView({ behavior: 'smooth' });
+    if (options.scroll) {
+      renameSection.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+
+  async function doOpenRenamePanel() {
+    hideError(); hideInfo();
+    renameSection.classList.remove('hidden');
+
+    if (!state.columns.length) {
+      renameStatusBar.textContent = '请先扫描表格';
+      return;
+    }
+
+    resetRenameFlow({ scroll: true });
   }
 
   async function doPreviewRename() {
@@ -945,6 +980,42 @@
 
   // -------- Download Flow --------
 
+  function resetDownloadFlow(options) {
+    options = options || {};
+
+    // Stop range picker if active for download
+    if (rangePicker.activeKind === 'download') stopRangePicker();
+
+    // Reset state
+    state.downloadItems = [];
+
+    // Reset range tokens
+    rangePicker.downloadTokens = [];
+    inputDownloadRangeOverride.value = '';
+
+    // Reset preview and result
+    downloadPreviewBody.innerHTML = '';
+    downloadPreviewSummary.textContent = '';
+    downloadPreviewWrap.classList.add('hidden');
+    downloadResult.classList.add('hidden');
+    downloadQueuedCount.textContent = '0';
+    downloadErrorCount.textContent = '0';
+    btnConfirmDownload.disabled = true;
+    downloadConfirmHint.textContent = '';
+    downloadRangeHint.textContent = '';
+
+    // Reset status text
+    downloadStatusBar.textContent = '框选 WPS 表格中的附件单元格，或在下方填写手动范围后点击预览。下载使用附件当前显示名作为文件名';
+
+    // Re-render UI
+    renderRangeChips('download');
+    updateClearButtonsVisibility();
+
+    if (options.scroll) {
+      downloadSection.scrollIntoView({ behavior: 'smooth' });
+    }
+  }
+
   async function doOpenDownloadPanel() {
     hideError(); hideInfo();
     downloadSection.classList.remove('hidden');
@@ -954,15 +1025,7 @@
       return;
     }
 
-    downloadStatusBar.textContent = '框选 WPS 表格中的附件单元格，或在下方填写手动范围后点击预览。下载使用附件当前显示名作为文件名';
-    downloadPreviewWrap.classList.add('hidden');
-    downloadResult.classList.add('hidden');
-    btnConfirmDownload.disabled = true;
-
-    updateClearButtonsVisibility();
-
-    // Scroll to download section
-    downloadSection.scrollIntoView({ behavior: 'smooth' });
+    resetDownloadFlow({ scroll: true });
   }
 
   async function doPreviewDownload() {
@@ -1130,6 +1193,14 @@
   btnScan.addEventListener('click', doScan);
   btnRenameSelected.addEventListener('click', doOpenRenamePanel);
   btnDownloadSelected.addEventListener('click', doOpenDownloadPanel);
+
+  btnResetRenameFlow.addEventListener('click', function () {
+    resetRenameFlow({ scroll: false });
+  });
+
+  btnResetDownloadFlow.addEventListener('click', function () {
+    resetDownloadFlow({ scroll: false });
+  });
   btnPreviewRename.addEventListener('click', doPreviewRename);
   btnConfirmRename.addEventListener('click', doConfirmRename);
   btnConfirmDownload.addEventListener('click', doConfirmDownload);
