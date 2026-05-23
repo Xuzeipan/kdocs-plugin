@@ -451,6 +451,7 @@
 
       colChips.appendChild(chip);
     });
+    updateClearButtonsVisibility();
   }
 
   // -------- Template --------
@@ -734,6 +735,8 @@
     renameResult.classList.add('hidden');
     btnConfirmRename.disabled = true;
 
+    updateClearButtonsVisibility();
+
     // Scroll to rename section
     renameSection.scrollIntoView({ behavior: 'smooth' });
   }
@@ -955,6 +958,8 @@
     downloadPreviewWrap.classList.add('hidden');
     downloadResult.classList.add('hidden');
     btnConfirmDownload.disabled = true;
+
+    updateClearButtonsVisibility();
 
     // Scroll to download section
     downloadSection.scrollIntoView({ behavior: 'smooth' });
@@ -1215,6 +1220,9 @@
   var rangePickerDownloadStatus = $('range-picker-download-status');
   var rangeChipsRename = $('range-chips-rename');
   var rangeChipsDownload = $('range-chips-download');
+  var btnClearRenameRange = $('btn-clear-rename-range');
+  var btnClearDownloadRange = $('btn-clear-download-range');
+  var btnClearSelectedColumns = $('btn-clear-selected-columns');
 
   function tokensKey(kind) {
     return kind === 'rename' ? 'renameTokens' : 'downloadTokens';
@@ -1227,6 +1235,7 @@
         status: rangePickerRenameStatus,
         chips: rangeChipsRename,
         input: inputRangeOverride,
+        clearBtn: btnClearRenameRange,
       };
     }
     return {
@@ -1234,6 +1243,7 @@
       status: rangePickerDownloadStatus,
       chips: rangeChipsDownload,
       input: inputDownloadRangeOverride,
+      clearBtn: btnClearDownloadRange,
     };
   }
 
@@ -1313,29 +1323,29 @@
 
     if (!tokens.length) {
       els.chips.classList.add('hidden');
-      return;
-    }
-    els.chips.classList.remove('hidden');
+    } else {
+      els.chips.classList.remove('hidden');
+      tokens.forEach(function (token, index) {
+        var chip = document.createElement('span');
+        chip.className = 'range-chip';
 
-    tokens.forEach(function (token, index) {
-      var chip = document.createElement('span');
-      chip.className = 'range-chip';
+        var label = document.createElement('span');
+        label.textContent = token;
+        chip.appendChild(label);
 
-      var label = document.createElement('span');
-      label.textContent = token;
-      chip.appendChild(label);
+        var remove = document.createElement('span');
+        remove.className = 'range-chip-remove';
+        remove.textContent = '×';
+        remove.addEventListener('click', function (e) {
+          e.stopPropagation();
+          removeRangeToken(kind, index);
+        });
+        chip.appendChild(remove);
 
-      var remove = document.createElement('span');
-      remove.className = 'range-chip-remove';
-      remove.textContent = '×';
-      remove.addEventListener('click', function (e) {
-        e.stopPropagation();
-        removeRangeToken(kind, index);
+        els.chips.appendChild(chip);
       });
-      chip.appendChild(remove);
-
-      els.chips.appendChild(chip);
-    });
+    }
+    updateClearButtonsVisibility();
   }
 
   function setPickerActive(kind, active) {
@@ -1404,6 +1414,88 @@
     rangePicker.startedAt = 0;
   }
 
+  // -------- Clear Helpers --------
+
+  function updateClearButtonsVisibility() {
+    // Rename range chips clear button
+    if (rangePicker.renameTokens.length > 0) {
+      btnClearRenameRange.classList.remove('hidden');
+    } else {
+      btnClearRenameRange.classList.add('hidden');
+    }
+    // Download range chips clear button
+    if (rangePicker.downloadTokens.length > 0) {
+      btnClearDownloadRange.classList.remove('hidden');
+    } else {
+      btnClearDownloadRange.classList.add('hidden');
+    }
+    // Selected columns clear button (shown via selectedChipsRow visibility)
+    // The button is inside selectedChipsRow, so it auto-hides when the row hides
+  }
+
+  function clearRangeTokens(kind) {
+    var key = tokensKey(kind);
+    rangePicker[key] = [];
+    syncInputFromTokens(kind);
+    renderRangeChips(kind);
+
+    // For download, also clear download preview state
+    if (kind === 'download') {
+      state.downloadItems = [];
+      downloadPreviewWrap.classList.add('hidden');
+      downloadResult.classList.add('hidden');
+      btnConfirmDownload.disabled = true;
+    }
+  }
+
+  function syncRuleColumnCheckboxes() {
+    var checkboxes = ruleColumnList.querySelectorAll('input[type="checkbox"]');
+    checkboxes.forEach(function (cb, index) {
+      if (state.columns[index]) {
+        cb.checked = state.selectedColumnIndexes.indexOf(state.columns[index].index) >= 0;
+      }
+    });
+  }
+
+  function clearSelectedColumns() {
+    // Save old column names for template cleanup
+    var oldColNames = [];
+    var indexMap = {};
+    for (var i = 0; i < state.columns.length; i++) {
+      indexMap[state.columns[i].index] = state.columns[i].name;
+    }
+    for (var j = 0; j < state.selectedColumnIndexes.length; j++) {
+      var nm = indexMap[state.selectedColumnIndexes[j]];
+      if (nm) oldColNames.push(nm);
+    }
+
+    // Clear selected column indexes
+    state.selectedColumnIndexes = [];
+
+    // If template is dirty, remove each column's part from the template
+    if (state.templateDirty && inputTemplate.value) {
+      for (var k = 0; k < oldColNames.length; k++) {
+        inputTemplate.value = removeColumnTemplatePart(inputTemplate.value, oldColNames[k]);
+      }
+    } else {
+      // Not dirty — just clear the template
+      inputTemplate.value = '';
+    }
+
+    // Refresh UI
+    renderSelectedChips(); // will call updateClearButtonsVisibility
+    syncRuleColumnCheckboxes();
+    updateRulePreview();
+    updatePreviewButton();
+    btnResetTemplate.classList.add('hidden');
+
+    // Clear rename preview state
+    state.renamePreview = null;
+    renamePreviewWrap.classList.add('hidden');
+    renameResult.classList.add('hidden');
+    btnConfirmRename.disabled = true;
+  }
+
   async function pollSelectedRange() {
     if (!rangePicker.activeKind) return;
     var kind = rangePicker.activeKind;
@@ -1466,6 +1558,18 @@
 
   inputDownloadRangeOverride.addEventListener('input', function () {
     handleRangeInputChange('download');
+  });
+
+  btnClearRenameRange.addEventListener('click', function () {
+    clearRangeTokens('rename');
+  });
+
+  btnClearDownloadRange.addEventListener('click', function () {
+    clearRangeTokens('download');
+  });
+
+  btnClearSelectedColumns.addEventListener('click', function () {
+    clearSelectedColumns();
   });
 
   // -------- Attachment Cell Deep Diagnosis --------

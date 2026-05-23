@@ -268,10 +268,10 @@ body {
 
 .chip .chip-remove {
   font-size: 12px; line-height: 1; margin-left: 2px;
-  color: #93c5fd; cursor: pointer;
+  color: #dc2626; cursor: pointer; font-weight: 600;
 }
 
-.chip .chip-remove:hover { color: #dc2626; }
+.chip .chip-remove:hover { color: #b91c1c; }
 
 /* ---- Template Input ---- */
 
@@ -308,6 +308,23 @@ body {
 }
 
 .time-format-custom.hidden { display: none; }
+
+/* ---- Clear Chip Buttons ---- */
+
+.clear-chip-btn {
+  color: #dc2626; border-color: #fecaca; background: #fef2f2;
+  margin-top: 3px; font-size: 10px;
+}
+
+.clear-chip-btn:hover:not(:disabled) {
+  color: #b91c1c; border-color: #fca5a5; background: #fee2e2;
+}
+
+.clear-chip-btn:active { background: #fecaca; }
+
+.clear-chip-btn:disabled { color: #9ca3af; border-color: #e5e7eb; background: #f9fafb; cursor: not-allowed; }
+
+.clear-chip-btn.hidden { display: none; }
 
 .label-hint {
   font-size: 9px; color: #9ca3af; font-weight: 400;
@@ -460,7 +477,7 @@ body {
 
 .range-chip .range-chip-remove {
   font-size: 12px; line-height: 1; margin-left: 2px;
-  color: #93c5fd; cursor: pointer;
+  color: #dc2626; cursor: pointer; font-weight: 600;
 }
 
-.range-chip .range-chip-remove:hover { color: #dc2626; }
+.range-chip .range-chip-remove:hover { color: #b91c1c; }
