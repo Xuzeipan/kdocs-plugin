@@ -421,9 +421,10 @@
   }
 
   function tryWpsNativeCellRows(maxRows = CONFIG.maxTableRows, maxCols = CONFIG.maxTableCols) {
-    if (!hasWpsCellReadApi()) return [];
+    if (!hasWpsCellReadApi()) return { rows: [], rowRecords: [] };
 
     const rows = [];
+    const rowRecords = [];
     let headerSeen = false;
     let anyDataSeen = false;
     let dataSeenAfterHeader = false;
@@ -444,6 +445,7 @@
       if (looksHeader) headerSeen = true;
       if (hasValue) {
         rows.push(values);
+        rowRecords.push({ rowIndex: row, rowNumber: row + 1 });
         anyDataSeen = true;
         if (headerSeen && !looksHeader) dataSeenAfterHeader = true;
         emptyStreak = 0;
@@ -459,7 +461,10 @@
       (row) => row.some((cell) => cleanText(cell) === "货件号") && row.some((cell) => cleanText(cell).includes("箱数"))
     );
 
-    return headerIndex >= 0 ? rows.slice(headerIndex) : rows;
+    if (headerIndex >= 0) {
+      return { rows: rows.slice(headerIndex), rowRecords: rowRecords.slice(headerIndex) };
+    }
+    return { rows: rows, rowRecords: rowRecords };
   }
 
   function extractCellLikeRecordsFromState() {
@@ -608,63 +613,84 @@
     return [];
   }
 
-  function trimTableRows(rows) {
-    rows = (rows || []).filter((row) => Array.isArray(row) && row.some((cell) => cleanText(normalizeGridValue(cell))));
-    let lastUsedCol = -1;
+  function trimTableRows(input) {
+    // Accept either rows array or { rows, rowRecords } object
+    var rawRows = Array.isArray(input) ? input : (input && input.rows ? input.rows : []);
+    var rawRecords = (input && !Array.isArray(input) && input.rowRecords) ? input.rowRecords : null;
 
-    for (const row of rows) {
-      for (let col = row.length - 1; col >= 0; col -= 1) {
-        if (cleanText(normalizeGridValue(row[col]))) {
+    // Build parallel arrays: filter empty rows while keeping rowRecords in sync
+    var filteredRows = [];
+    var filteredRecords = rawRecords ? [] : null;
+    for (var i = 0; i < rawRows.length; i++) {
+      var row = rawRows[i];
+      if (!Array.isArray(row)) continue;
+      if (!row.some(function (cell) { return cleanText(normalizeGridValue(cell)); })) continue;
+      filteredRows.push(row);
+      if (filteredRecords && rawRecords[i]) filteredRecords.push(rawRecords[i]);
+    }
+
+    var lastUsedCol = -1;
+    for (var r = 0; r < filteredRows.length; r++) {
+      for (var col = filteredRows[r].length - 1; col >= 0; col -= 1) {
+        if (cleanText(normalizeGridValue(filteredRows[r][col]))) {
           lastUsedCol = Math.max(lastUsedCol, col);
           break;
         }
       }
     }
 
-    if (lastUsedCol < 0) return [];
-    return rows.map((row) => row.slice(0, lastUsedCol + 1));
+    if (lastUsedCol < 0) return rawRecords ? { rows: [], rowRecords: [] } : [];
+
+    var trimmed = filteredRows.map(function (row) { return row.slice(0, lastUsedCol + 1); });
+    return filteredRecords ? { rows: trimmed, rowRecords: filteredRecords } : trimmed;
   }
 
   function buildPlanFromTableDataDirectly() {
-    const nativeRows = trimTableRows(tryWpsNativeCellRows());
-    let plan = buildPlanFromTableRows(nativeRows);
+    var nativeResult = trimTableRows(tryWpsNativeCellRows());
+    var nativeRows = Array.isArray(nativeResult) ? nativeResult : nativeResult.rows;
+    var nativeRowRecords = (!Array.isArray(nativeResult) && nativeResult.rowRecords) ? nativeResult.rowRecords : null;
+    var plan = buildPlanFromTableRows(nativeRows);
     if (plan.length) {
-      log(`表格数据读取成功：WPS 原生单元格接口，生成任务 ${plan.length} 个。`);
-      return { plan, source: "wps-native-cell-api", rows: nativeRows };
+      log("表格数据读取成功：WPS 原生单元格接口，生成任务 " + plan.length + " 个。");
+      var result = { plan: plan, source: "wps-native-cell-api", rows: nativeRows };
+      if (nativeRowRecords) result.rowRecords = nativeRowRecords;
+      return result;
     }
-    let bestRowsResult = nativeRows.length
-      ? { plan, source: "wps-native-cell-api", rows: nativeRows }
+    var bestRowsResult = nativeRows.length
+      ? { plan: plan, source: "wps-native-cell-api", rows: nativeRows, rowRecords: nativeRowRecords }
       : null;
 
-    const apiRows = trimTableRows(tryWorkbookApiRows());
+    var apiRows = trimTableRows(tryWorkbookApiRows());
     plan = buildPlanFromTableRows(apiRows);
     if (plan.length) {
-      log(`表格数据读取成功：workbook API，生成任务 ${plan.length} 个。`);
-      return { plan, source: "workbook-api", rows: apiRows };
+      log("表格数据读取成功：workbook API，生成任务 " + plan.length + " 个。");
+      return { plan: plan, source: "workbook-api", rows: apiRows };
     }
     if (!bestRowsResult && apiRows.length) {
-      bestRowsResult = { plan, source: "workbook-api", rows: apiRows };
+      bestRowsResult = { plan: plan, source: "workbook-api", rows: apiRows };
     }
 
-    const records = extractCellLikeRecordsFromState();
-    const stateRows = trimTableRows(rowsFromCellLikeRecords(records));
+    var records = extractCellLikeRecordsFromState();
+    var stateResult = trimTableRows(rowsFromCellLikeRecords(records));
+    var stateRows = Array.isArray(stateResult) ? stateResult : stateResult.rows;
     plan = buildPlanFromTableRows(stateRows);
     if (plan.length) {
-      log(`表格数据读取成功：内部单元格状态，生成任务 ${plan.length} 个。`);
-      return { plan, source: "cell-state", rows: stateRows, records };
+      log("表格数据读取成功：内部单元格状态，生成任务 " + plan.length + " 个。");
+      return { plan: plan, source: "cell-state", rows: stateRows, records: records };
     }
     if (!bestRowsResult && stateRows.length) {
-      bestRowsResult = { plan, source: "cell-state", rows: stateRows, records };
+      bestRowsResult = { plan: plan, source: "cell-state", rows: stateRows, records: records };
     }
 
-    const domRows = trimTableRows(extractRowsFromPlainText(document.body.innerText || document.body.textContent || ""));
+    var domResult = trimTableRows(extractRowsFromPlainText(document.body.innerText || document.body.textContent || ""));
+    var domRows = Array.isArray(domResult) ? domResult : domResult.rows;
     plan = buildPlanFromTableRows(domRows);
     if (plan.length) {
-      log(`表格数据读取成功：页面文本，生成任务 ${plan.length} 个。`);
-      return { plan, source: "dom-text", rows: domRows };
+      log("表格数据读取成功：页面文本，生成任务 " + plan.length + " 个。");
+      return { plan: plan, source: "dom-text", rows: domRows };
     }
     if (!bestRowsResult && domRows.length) {
-      bestRowsResult = { plan, source: "dom-text", rows: domRows };
+      bestRowsResult = { plan: plan, source: "dom-text", rows: domRows };
     }
 
     if (bestRowsResult) {
@@ -6625,6 +6651,16 @@
 
   // ===== Template-based Rename Helpers =====
 
+  function colIndexToLetters(colIndex) {
+    var letters = '';
+    var n = colIndex;
+    do {
+      letters = String.fromCharCode(65 + (n % 26)) + letters;
+      n = Math.floor(n / 26) - 1;
+    } while (n >= 0);
+    return letters;
+  }
+
   function getColumnsFromLastScan() {
     var kernel = window.WPSBatch && window.WPSBatch.kernel;
     var sr = kernel && kernel.getLastScanResult();
@@ -7305,6 +7341,7 @@
       var plan = await buildPlanDirectlyFromPage();
       var tableResult = window.WPSBatch.lastTableReadResult || {};
       var rows = tableResult.rows || [];
+      var rowRecords = tableResult.rowRecords || null;
       var headers = rows.length > 0 ? rows[0] : [];
       var columns = headers.map(function (h, ci) {
         var values = [];
@@ -7312,7 +7349,12 @@
           var rowArr = rows[ri];
           var val = rowArr && rowArr[ci] ? cleanText(rowArr[ci]) : "";
           if (val) {
-            values.push({ rowIndex: ri - 1, rowNumber: ri + 1, value: val });
+            // Use real row index from rowRecords if available, else fall back to array index
+            if (rowRecords && rowRecords[ri]) {
+              values.push({ rowIndex: rowRecords[ri].rowIndex, rowNumber: rowRecords[ri].rowNumber, value: val });
+            } else {
+              values.push({ rowIndex: ri, rowNumber: ri + 1, value: val });
+            }
           }
         }
         return { index: ci, name: cleanText(h), values: values };
@@ -7322,6 +7364,7 @@
         source: tableResult.source || "unknown",
         rows: rows,
         columns: columns,
+        rowRecords: rowRecords,
         records: tableResult.records || [],
         planCount: plan.length,
         rowCount: rows.length,
@@ -7599,6 +7642,94 @@
     kernel.diagnoseSelectedAttachmentCells = diagnoseSelectedAttachmentCells;
     kernel.prepareSelectedAttachmentDownloads = prepareSelectedAttachmentDownloads;
 
+    kernel.batchSearchCells = function (options) {
+      options = options || {};
+      var keywords = options.keywords || [];
+      var caseSensitive = !!options.caseSensitive;
+      var maxResults = options.maxResults || 500;
+
+      var sr = lastScanResult;
+      if (!sr) {
+        return { ok: false, error: '请先扫描表格数据' };
+      }
+
+      var columns = sr.columns || [];
+      var results = [];
+
+      for (var k = 0; k < keywords.length && results.length < maxResults; k++) {
+        var kw = keywords[k];
+        if (!kw) continue;
+        var searchKw = caseSensitive ? kw : kw.toLowerCase();
+
+        for (var c = 0; c < columns.length && results.length < maxResults; c++) {
+          var col = columns[c];
+          var values = col.values || [];
+          for (var v = 0; v < values.length && results.length < maxResults; v++) {
+            var cv = values[v];
+            var cellVal = cv.value || '';
+            var testVal = caseSensitive ? cellVal : cellVal.toLowerCase();
+            if (testVal.indexOf(searchKw) >= 0) {
+              results.push({
+                keyword: kw,
+                rowIndex: cv.rowNumber - 1,
+                rowNumber: cv.rowNumber,
+                colIndex: col.index,
+                colName: col.name,
+                address: colIndexToLetters(col.index) + cv.rowNumber,
+                value: cellVal,
+              });
+            }
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        keywords: keywords,
+        results: results,
+        summary: {
+          keywordCount: keywords.length,
+          hitCount: results.length,
+          capped: results.length >= maxResults,
+          maxResults: maxResults,
+        },
+        scanSource: sr.source || 'unknown',
+      };
+    };
+
+    kernel.jumpToCell = function (options) {
+      options = options || {};
+      var rowIndex = options.rowIndex;
+      var colIndex = options.colIndex;
+      var address = options.address;
+
+      // If address provided, parse it as the authoritative source
+      if (address) {
+        var addrMatch = String(address).trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
+        if (addrMatch) {
+          var colLetters = addrMatch[1];
+          var col = 0;
+          for (var i = 0; i < colLetters.length; i++) {
+            col = col * 26 + (colLetters.charCodeAt(i) - 64);
+          }
+          colIndex = col - 1;
+          rowIndex = parseInt(addrMatch[2], 10) - 1;
+        }
+      }
+
+      if (rowIndex == null || colIndex == null) {
+        return { ok: false, error: '缺少 rowIndex 或 colIndex' };
+      }
+      if (!address) {
+        address = colIndexToLetters(colIndex) + (rowIndex + 1);
+      }
+      var selResult = selectWpsCell(rowIndex, colIndex, { allowMutation: true });
+      if (!selResult.ok) {
+        return { ok: false, error: '无法选中单元格 ' + address, method: selResult.method, results: selResult.results };
+      }
+      return { ok: true, method: selResult.method, address: address };
+    };
+
     return kernel;
   }
 
@@ -7623,6 +7754,8 @@
     diagnoseSelectionApis: function () { return wpsBatchKernel.diagnoseSelectionApis(); },
     diagnoseSelectedAttachmentCells: function (options) { return wpsBatchKernel.diagnoseSelectedAttachmentCells(options); },
     prepareSelectedAttachmentDownloads: function (options) { return wpsBatchKernel.prepareSelectedAttachmentDownloads(options); },
+    batchSearchCells: function (options) { return wpsBatchKernel.batchSearchCells(options); },
+    jumpToCell: function (options) { return wpsBatchKernel.jumpToCell(options); },
     // Legacy API — preserved for backward compatibility
     run,
     buildPlanFromTsv,

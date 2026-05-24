@@ -115,6 +115,14 @@
           result = await window.WPSBatch.prepareSelectedAttachmentDownloads(options);
           break;
 
+        case 'batchSearchCells':
+          result = await window.WPSBatch.batchSearchCells(options);
+          break;
+
+        case 'jumpToCell':
+          result = await window.WPSBatch.jumpToCell(options);
+          break;
+
         default:
           throw new Error('未识别的命令: ' + action);
       }

@@ -55,6 +55,19 @@
   var btnResetRenameFlow = $('btn-reset-rename-flow');
   var btnResetDownloadFlow = $('btn-reset-download-flow');
 
+  var btnBatchSearch = $('btn-batch-search');
+  var searchSection = $('search-section');
+  var searchStatusBar = $('search-status-bar');
+  var inputSearchKeywords = $('input-search-keywords');
+  var searchHint = $('search-hint');
+  var btnRunBatchSearch = $('btn-run-batch-search');
+  var btnClearBatchSearch = $('btn-clear-batch-search');
+  var searchSummary = $('search-summary');
+  var searchResultWrap = $('search-result-wrap');
+  var searchResultBody = $('search-result-body');
+  var searchEmpty = $('search-empty');
+  var btnResetSearchFlow = $('btn-reset-search-flow');
+
   var diagnoseWrap = $('diagnose-wrap');
   var btnDiagnoseSelection = $('btn-diagnose-selection');
   var btnDiagnoseAttachment = $('btn-diagnose-attachment');
@@ -92,6 +105,8 @@
     downloadItems: [],
     timeFormat: 'original',
     customTimeFormat: '',
+    searchResults: [],
+    searchKeywords: [],
   };
 
   // -------- Helpers --------
@@ -212,6 +227,7 @@
         btnScan.disabled = true;
         btnRenameSelected.disabled = true;
         btnDownloadSelected.disabled = true;
+        btnBatchSearch.disabled = true;
         return;
       }
       if (!env.hasWPSBatch) {
@@ -219,11 +235,13 @@
         btnScan.disabled = true;
         btnRenameSelected.disabled = true;
         btnDownloadSelected.disabled = true;
+        btnBatchSearch.disabled = true;
         return;
       }
 
       btnScan.disabled = false;
       btnDownloadSelected.disabled = false;
+      btnBatchSearch.disabled = false;
       showInfo('页面就绪，可以扫描或下载');
     } catch (error) {
       showError('检查页面失败: ' + error.message);
@@ -232,6 +250,7 @@
       btnScan.disabled = true;
       btnRenameSelected.disabled = true;
       btnDownloadSelected.disabled = true;
+      btnBatchSearch.disabled = true;
     } finally {
       hideLoading();
     }
@@ -1187,12 +1206,168 @@
     }
   }
 
+  // -------- Search Flow --------
+
+  function parseSearchKeywords(text) {
+    if (!text) return [];
+    var parts = text.split(/[\n,，;；]+/);
+    var seen = {};
+    var keywords = [];
+    for (var i = 0; i < parts.length; i++) {
+      var kw = parts[i].trim();
+      if (!kw) continue;
+      if (seen[kw]) continue;
+      seen[kw] = true;
+      keywords.push(kw);
+    }
+    return keywords;
+  }
+
+  function resetSearchFlow() {
+    state.searchResults = [];
+    state.searchKeywords = [];
+    inputSearchKeywords.value = '';
+    searchSummary.classList.add('hidden');
+    searchSummary.textContent = '';
+    searchResultWrap.classList.add('hidden');
+    searchResultBody.innerHTML = '';
+    searchEmpty.classList.add('hidden');
+    searchStatusBar.textContent = '';
+  }
+
+  async function doOpenSearchPanel() {
+    hideError(); hideInfo();
+    searchSection.classList.remove('hidden');
+
+    if (!state.bridgeReady) {
+      searchStatusBar.textContent = '请先检查页面';
+      return;
+    }
+
+    // Auto-scan if no columns yet
+    if (!state.columns.length) {
+      searchStatusBar.textContent = '正在自动扫描表格数据...';
+      try {
+        await doScan();
+      } catch (e) {
+        searchStatusBar.textContent = '扫描失败: ' + (e.message || e);
+        return;
+      }
+    }
+
+    searchStatusBar.textContent = '输入关键词后点击查询';
+    searchSection.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  async function doBatchSearch() {
+    hideError(); hideInfo();
+
+    var text = inputSearchKeywords.value;
+    var keywords = parseSearchKeywords(text);
+
+    if (!keywords.length) {
+      showError('请输入至少一个查询关键词');
+      return;
+    }
+
+    // Auto-scan if no columns
+    if (!state.columns.length) {
+      searchStatusBar.textContent = '正在自动扫描表格数据...';
+      try {
+        await doScan();
+      } catch (e) {
+        showError('扫描失败: ' + (e.message || e));
+        return;
+      }
+    }
+
+    showLoading('正在查询...');
+    try {
+      var result = await sendCommand('batchSearchCells', { keywords: keywords });
+      state.searchResults = result.results || [];
+      state.searchKeywords = keywords;
+
+      renderSearchResults(result);
+
+      searchStatusBar.textContent = '共找到 ' + (result.summary ? result.summary.hitCount : 0) + ' 条结果' +
+        (result.summary && result.summary.capped ? '（已达上限 ' + result.summary.maxResults + '）' : '');
+    } catch (error) {
+      showError('查询失败: ' + error.message);
+      searchSummary.classList.add('hidden');
+    } finally {
+      hideLoading();
+    }
+  }
+
+  function renderSearchResults(result) {
+    var results = result.results || [];
+    var summary = result.summary || {};
+
+    searchSummary.textContent = summary.keywordCount + ' 个关键词, ' + summary.hitCount + ' 条命中' +
+      (summary.capped ? '（已达上限 ' + summary.maxResults + '）' : '');
+    searchSummary.classList.remove('hidden');
+
+    searchResultBody.innerHTML = '';
+
+    if (!results.length) {
+      searchResultWrap.classList.add('hidden');
+      searchEmpty.classList.remove('hidden');
+      return;
+    }
+
+    searchEmpty.classList.add('hidden');
+    searchResultWrap.classList.remove('hidden');
+
+    results.forEach(function (item) {
+      var tr = document.createElement('tr');
+      tr.title = '点击跳转到 ' + item.address;
+
+      var tdKw = document.createElement('td');
+      tdKw.textContent = item.keyword;
+      tr.appendChild(tdKw);
+
+      var tdAddr = document.createElement('td');
+      tdAddr.textContent = item.address;
+      tr.appendChild(tdAddr);
+
+      var tdVal = document.createElement('td');
+      tdVal.textContent = truncate(item.value || '', 50);
+      tdVal.title = item.value || '';
+      tr.appendChild(tdVal);
+
+      tr.addEventListener('click', function () {
+        doJumpToSearchResult(item);
+      });
+
+      searchResultBody.appendChild(tr);
+    });
+  }
+
+  async function doJumpToSearchResult(item) {
+    try {
+      var result = await sendCommand('jumpToCell', {
+        address: item.address,
+        rowNumber: item.rowNumber,
+        rowIndex: item.rowIndex,
+        colIndex: item.colIndex,
+      });
+      if (result && result.ok) {
+        showInfo('已跳转到 ' + (result.address || item.address));
+      } else {
+        showError('跳转失败: ' + ((result && result.error) || '未知错误'));
+      }
+    } catch (error) {
+      showError('跳转失败: ' + error.message);
+    }
+  }
+
   // -------- Event Listeners --------
 
   btnCheck.addEventListener('click', doCheckPage);
   btnScan.addEventListener('click', doScan);
   btnRenameSelected.addEventListener('click', doOpenRenamePanel);
   btnDownloadSelected.addEventListener('click', doOpenDownloadPanel);
+  btnBatchSearch.addEventListener('click', doOpenSearchPanel);
 
   btnResetRenameFlow.addEventListener('click', function () {
     resetRenameFlow({ scroll: false });
@@ -1201,6 +1376,19 @@
   btnResetDownloadFlow.addEventListener('click', function () {
     resetDownloadFlow({ scroll: false });
   });
+
+  btnRunBatchSearch.addEventListener('click', doBatchSearch);
+
+  btnClearBatchSearch.addEventListener('click', function () {
+    inputSearchKeywords.value = '';
+    resetSearchFlow();
+  });
+
+  btnResetSearchFlow.addEventListener('click', function () {
+    resetSearchFlow();
+    searchStatusBar.textContent = '输入关键词后点击查询';
+  });
+
   btnPreviewRename.addEventListener('click', doPreviewRename);
   btnConfirmRename.addEventListener('click', doConfirmRename);
   btnConfirmDownload.addEventListener('click', doConfirmDownload);

@@ -191,6 +191,27 @@ body {
 
 #col-data-table tbody tr:hover { background: #f9fafb; }
 
+#search-result-table { width: 100%; border-collapse: collapse; font-size: 10px; table-layout: fixed; }
+
+#search-result-table thead { position: sticky; top: 0; z-index: 1; }
+
+#search-result-table th {
+  background: #f9fafb; color: #6b7280; font-weight: 600;
+  text-align: left; padding: 4px 7px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+#search-result-table td {
+  padding: 3px 7px; border-bottom: 1px solid #f3f4f6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+#search-result-table tbody tr {
+  cursor: pointer;
+}
+
+#search-result-table tbody tr:hover { background: #eff6ff; }
+
 .col-row-num { width: 40px; }
 .col-value { width: auto; }
 .col-src-name { width: 35%; }
@@ -428,6 +449,8 @@ body {
 
 .col-addr { width: 50px; }
 .col-dl-name { width: 60%; }
+.col-kw { width: 70px; }
+.col-s-value { width: auto; }
 
 #download-preview-wrap.hidden { display: none; }
 #download-result.hidden { display: none; }
