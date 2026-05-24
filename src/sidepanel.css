@@ -66,6 +66,14 @@ body {
 
 .btn-sm { padding: 3px 8px; font-size: 10px; }
 
+.btn-reset-flow {
+  color: #6b7280; border-color: #e5e7eb; background: #f9fafb;
+}
+
+.btn-reset-flow:hover:not(:disabled) {
+  color: #374151; border-color: #d1d5db; background: #f3f4f6;
+}
+
 .btn-close { background: none; border: none; font-size: 15px; cursor: pointer; color: #6b7280; line-height: 1; }
 
 /* ---- Loading / Errors ---- */
@@ -108,6 +116,10 @@ body {
 .section-header h3 { font-size: 12px; font-weight: 600; color: #111827; }
 .section-header.sub { margin-top: 8px; }
 .section-header.sub h4 { font-size: 11px; font-weight: 600; color: #374151; }
+
+.section-header-actions {
+  display: flex; align-items: center; gap: 6px;
+}
 
 .summary { font-size: 10px; color: #6b7280; }
 
@@ -178,6 +190,27 @@ body {
 }
 
 #col-data-table tbody tr:hover { background: #f9fafb; }
+
+#search-result-table { width: 100%; border-collapse: collapse; font-size: 10px; table-layout: fixed; }
+
+#search-result-table thead { position: sticky; top: 0; z-index: 1; }
+
+#search-result-table th {
+  background: #f9fafb; color: #6b7280; font-weight: 600;
+  text-align: left; padding: 4px 7px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+#search-result-table td {
+  padding: 3px 7px; border-bottom: 1px solid #f3f4f6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+#search-result-table tbody tr {
+  cursor: pointer;
+}
+
+#search-result-table tbody tr:hover { background: #eff6ff; }
 
 .col-row-num { width: 40px; }
 .col-value { width: auto; }
@@ -416,6 +449,8 @@ body {
 
 .col-addr { width: 50px; }
 .col-dl-name { width: 60%; }
+.col-kw { width: 70px; }
+.col-s-value { width: auto; }
 
 #download-preview-wrap.hidden { display: none; }
 #download-result.hidden { display: none; }
