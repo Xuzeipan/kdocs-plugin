@@ -6645,6 +6645,106 @@
       }
     }
 
+    // ===== Merge cell resolution pass =====
+    // For remaining non-attachment cells, try to resolve via merge cell detection.
+    // This handles the case where a user selects a merged cell and the attachment
+    // data only lives on the master (top-left) cell.
+    for (var pm = 0; pm < result.cells.length; pm++) {
+      var entry4 = result.cells[pm];
+      if (entry4.isAttachment) continue;
+      if (entry4.error) continue;
+
+      var mergeInfo4 = detectCellMergeInfo(entry4.rowIndex, entry4.colIndex);
+      if (!mergeInfo4 || !mergeInfo4.isMerged) continue;
+      if (mergeInfo4.isMaster) continue; // master already went through all detectors
+
+      // Merge slave cell — try to find the master cell's attachment
+      var mRow, mCol;
+      if (Number.isFinite(mergeInfo4.masterRow) && Number.isFinite(mergeInfo4.masterCol)) {
+        mRow = mergeInfo4.masterRow;
+        mCol = mergeInfo4.masterCol;
+      } else {
+        // We know it's merged but don't have master coordinates.
+        // Do a bounded search within the selection range (up-left only, limited radius).
+        var srRowFrom = Number.isFinite(result.range.rowFrom) ? result.range.rowFrom : 0;
+        var srColFrom = Number.isFinite(result.range.colFrom) ? result.range.colFrom : 0;
+        var boundedR = Math.min(entry4.rowIndex - srRowFrom, 10);
+        var boundedC = Math.min(entry4.colIndex - srColFrom, 10);
+        var foundMaster = false;
+        for (var br = 0; br <= boundedR && !foundMaster; br++) {
+          for (var bc = 0; bc <= boundedC && !foundMaster; bc++) {
+            if (br === 0 && bc === 0) continue;
+            var cr = entry4.rowIndex - br;
+            var cc = entry4.colIndex - bc;
+            if (cr < 0 || cc < 0) continue;
+            var cco = getCellObjectAt(cr, cc);
+            if (cco) {
+              var cm = scanObjectForAttachmentMeta(cco, 8);
+              if (cm && cm.id) {
+                mRow = cr;
+                mCol = cc;
+                foundMaster = true;
+              }
+            }
+          }
+        }
+        if (!foundMaster) {
+          entry4.detectAttempts.push({ path: "merge-slave", ok: false, reason: "no-master-found" });
+          continue;
+        }
+      }
+
+      // Check if the master cell is already in results with attachment info
+      var masterEntry = null;
+      for (var mq = 0; mq < result.cells.length; mq++) {
+        var ce = result.cells[mq];
+        if (ce.rowIndex === mRow && ce.colIndex === mCol) {
+          masterEntry = ce;
+          break;
+        }
+      }
+
+      if (masterEntry && masterEntry.isAttachment && masterEntry.attachmentMeta) {
+        entry4.isAttachment = true;
+        entry4.attachmentMeta = masterEntry.attachmentMeta;
+        // Inherit master cell text for proper display name generation
+        if (masterEntry.cellText) entry4.cellText = masterEntry.cellText;
+        entry4.detectSource = "merge-slave-from-master";
+        entry4.detectAttempts.push({ path: "merge-slave", ok: true, masterAddress: columnNameFromIndex(mCol) + (mRow + 1) });
+        result.summary.attachmentCount++;
+        result.summary.nonAttachmentCount--;
+        continue;
+      }
+
+      // Try to detect attachment directly from master cell object
+      var masterCellObj = getCellObjectAt(mRow, mCol);
+      if (masterCellObj) {
+        var masterMeta4 = scanObjectForAttachmentMeta(masterCellObj, 8);
+        if (masterMeta4 && masterMeta4.id) {
+          // Read master cell text for proper display name
+          var masterCellText = "";
+          try { masterCellText = getWpsCellText(mRow, mCol); } catch (_) {}
+          entry4.isAttachment = true;
+          entry4.cellText = masterCellText || entry4.cellText;
+          entry4.attachmentMeta = {
+            subFileId: masterMeta4.id,
+            fileSize: masterMeta4.fileSize || "",
+            aType: masterMeta4.aType || "pdf",
+            fileName: masterMeta4.fileName || "",
+            text: masterMeta4.text || "",
+            displayName: (masterCellText || entry4.cellText).replace(/^📄/, ""),
+          };
+          entry4.detectSource = "merge-slave-master-cell-obj";
+          entry4.detectAttempts.push({ path: "merge-slave", ok: true, masterAddress: columnNameFromIndex(mCol) + (mRow + 1) });
+          result.summary.attachmentCount++;
+          result.summary.nonAttachmentCount--;
+          continue;
+        }
+      }
+
+      entry4.detectAttempts.push({ path: "merge-slave", ok: false, reason: "master-no-attachment" });
+    }
+
     delete result._pendingAsyncCells;
     return result;
   }
@@ -7213,6 +7313,191 @@
     };
   }
 
+  // ===== Merge Cell Detection Helpers =====
+
+  // Probes WPS APIs to determine if (rowIndex, colIndex) belongs to a merged cell.
+  // Returns { isMerged, isMaster, masterRow, masterCol, rowSpan, colSpan } or null.
+  function detectCellMergeInfo(rowIndex, colIndex) {
+    // 1) Cell object merge properties
+    try {
+      var cellObj = getCellObjectAt(rowIndex, colIndex);
+      if (cellObj) {
+        var mi = cellObj.mergeInfo || cellObj._mergeInfo || cellObj.mergedCellInfo;
+        if (mi && typeof mi === 'object') {
+          var isMerged = mi.isMerged || mi.rowSpan > 1 || mi.colSpan > 1 || mi.isMergeCell;
+          if (isMerged) {
+            return {
+              isMerged: true,
+              isMaster: mi.isMaster !== false && mi.isSlave !== true,
+              masterRow: Number.isFinite(mi.masterRow) ? mi.masterRow : (mi.isMaster !== false ? rowIndex : null),
+              masterCol: Number.isFinite(mi.masterCol) ? mi.masterCol : (mi.isMaster !== false ? colIndex : null),
+              rowSpan: mi.rowSpan || (Number.isFinite(mi.endRow) ? mi.endRow - rowIndex + 1 : 1),
+              colSpan: mi.colSpan || (Number.isFinite(mi.endCol) ? mi.endCol - colIndex + 1 : 1),
+            };
+          }
+        }
+        // Try cell getter methods
+        var cellGetters = ['getMergeInfo', 'getMergedInfo', 'getMergedCellInfo'];
+        for (var gi = 0; gi < cellGetters.length; gi++) {
+          try {
+            if (typeof cellObj[cellGetters[gi]] === 'function') {
+              var gmi = cellObj[cellGetters[gi]]();
+              if (gmi && typeof gmi === 'object') {
+                return {
+                  isMerged: true,
+                  isMaster: gmi.isMaster !== false && gmi.isSlave !== true,
+                  masterRow: Number.isFinite(gmi.masterRow) ? gmi.masterRow : rowIndex,
+                  masterCol: Number.isFinite(gmi.masterCol) ? gmi.masterCol : colIndex,
+                  rowSpan: gmi.rowSpan || 1,
+                  colSpan: gmi.colSpan || 1,
+                };
+              }
+            }
+          } catch (_) {}
+        }
+        // Boolean merge predicates
+        var boolGetters = ['isMergeCell', 'isMergedCell', 'isInMergedRange'];
+        for (var bi = 0; bi < boolGetters.length; bi++) {
+          try {
+            if (typeof cellObj[boolGetters[bi]] === 'function' && cellObj[boolGetters[bi]]()) {
+              return { isMerged: true, isMaster: false, masterRow: null, masterCol: null, rowSpan: 1, colSpan: 1 };
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    // 2) Sheet-level merge cell queries
+    try {
+      var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
+      if (sheet) {
+        var sheetMethods = ['getMergedCells', 'getMergedRanges', 'getMergedCellRanges', 'getAllMergedCells', 'getMergeCellInfos', 'getMergedCellList'];
+        for (var si = 0; si < sheetMethods.length; si++) {
+          try {
+            if (typeof sheet[sheetMethods[si]] !== 'function') continue;
+            var mergedItems = sheet[sheetMethods[si]]();
+            if (!mergedItems) continue;
+            var arr = Array.isArray(mergedItems) ? mergedItems : [mergedItems];
+            for (var mi2 = 0; mi2 < arr.length; mi2++) {
+              var mc = arr[mi2];
+              if (!mc) continue;
+              var rf = getFieldNumber(mc, ['rowFrom', 'startRow', 'row', 'r1', 'topRow', 'firstRow', '_rowFrom', 'rowStart']);
+              var rt = getFieldNumber(mc, ['rowTo', 'endRow', 'r2', 'bottomRow', 'lastRow', '_rowTo', 'rowEnd']);
+              var cf = getFieldNumber(mc, ['colFrom', 'startCol', 'col', 'c1', 'leftCol', 'firstCol', '_colFrom', 'colStart']);
+              var ct = getFieldNumber(mc, ['colTo', 'endCol', 'c2', 'rightCol', 'lastCol', '_colTo', 'colEnd']);
+              if (Number.isFinite(rf) && Number.isFinite(rt) && Number.isFinite(cf) && Number.isFinite(ct)) {
+                if (rowIndex >= rf && rowIndex <= rt && colIndex >= cf && colIndex <= ct) {
+                  return {
+                    isMerged: true,
+                    isMaster: rowIndex === rf && colIndex === cf,
+                    masterRow: rf,
+                    masterCol: cf,
+                    rowSpan: rt - rf + 1,
+                    colSpan: ct - cf + 1,
+                  };
+                }
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    // 3) Range-level merge check
+    try {
+      var range = createWpsRange(rowIndex, rowIndex, colIndex, colIndex);
+      if (range) {
+        var rangeChecks = ['isMergedCell', 'isMergeCell', 'isInMerge'];
+        for (var rc = 0; rc < rangeChecks.length; rc++) {
+          try {
+            if (typeof range[rangeChecks[rc]] === 'function' && range[rangeChecks[rc]](rowIndex, colIndex)) {
+              // Try to get the merged range bounds
+              var mcr = null;
+              try {
+                if (typeof range.getMergedCellRange === 'function') mcr = range.getMergedCellRange(rowIndex, colIndex);
+                else if (typeof range.getMergeRange === 'function') mcr = range.getMergeRange(rowIndex, colIndex);
+                else if (typeof range.getMergedRange === 'function') mcr = range.getMergedRange(rowIndex, colIndex);
+              } catch (_) {}
+              if (mcr) {
+                var mrf = getFieldNumber(mcr, ['rowFrom', 'startRow', 'row', 'r1', 'topRow', '_rowFrom', 'rowStart']);
+                var mrt = getFieldNumber(mcr, ['rowTo', 'endRow', 'r2', 'bottomRow', '_rowTo', 'rowEnd']);
+                var mcf = getFieldNumber(mcr, ['colFrom', 'startCol', 'col', 'c1', 'leftCol', '_colFrom', 'colStart']);
+                var mct = getFieldNumber(mcr, ['colTo', 'endCol', 'c2', 'rightCol', '_colTo', 'colEnd']);
+                if (Number.isFinite(mrf) && Number.isFinite(mcf)) {
+                  return {
+                    isMerged: true,
+                    isMaster: rowIndex === mrf && colIndex === mcf,
+                    masterRow: mrf,
+                    masterCol: mcf,
+                    rowSpan: Number.isFinite(mrt) ? mrt - mrf + 1 : 1,
+                    colSpan: Number.isFinite(mct) ? mct - mcf + 1 : 1,
+                  };
+                }
+              }
+              return { isMerged: true, isMaster: false, masterRow: null, masterCol: null, rowSpan: 1, colSpan: 1 };
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  // Classify a non-attachment cell entry to determine whether it should block the download flow.
+  // Returns 'blocker' for cells that should prevent download,
+  //         'ignorable' for merge-slave / blank cells that can be safely skipped.
+  function classifyNonAttachmentCell(entry, inspectResult) {
+    if (!entry || entry.isAttachment) return null;
+
+    // Cells with read errors are always blockers
+    if (entry.error) return 'blocker';
+
+    var text = (entry.cellText || '').trim();
+
+    // Empty-text cells: likely merge slaves or naturally blank cells → ignorable
+    if (!text) return 'ignorable';
+
+    // Non-empty text but not an attachment — this would normally be a blocker.
+    // But check if it could be merge-slave display text (the 📄 emoji sometimes
+    // shows on all cells of a merged range even though only the master holds data).
+    var mergeInfo = detectCellMergeInfo(entry.rowIndex, entry.colIndex);
+    if (mergeInfo && mergeInfo.isMerged && !mergeInfo.isMaster) {
+      // Merge slave with text — the text likely comes from the master cell display.
+      // If the selection already has attachment cells, treat this as ignorable.
+      if (inspectResult && inspectResult.summary && inspectResult.summary.attachmentCount > 0) {
+        return 'ignorable';
+      }
+    }
+
+    return 'blocker';
+  }
+
+  // Filter non-attachment cells in inspectResult.
+  // Returns { ignorableCount, blockerCount, blockerSamples }.
+  function filterNonAttachmentCells(inspectResult) {
+    var ignorableCount = 0;
+    var blockerCount = 0;
+    var blockerSamples = [];
+
+    for (var i = 0; i < inspectResult.cells.length; i++) {
+      var entry = inspectResult.cells[i];
+      if (entry.isAttachment) continue;
+
+      var classification = classifyNonAttachmentCell(entry, inspectResult);
+      if (classification === 'ignorable') {
+        ignorableCount++;
+      } else {
+        blockerCount++;
+        if (blockerSamples.length < 3) {
+          blockerSamples.push(entry.colName + (entry.rowNumber != null ? entry.rowNumber : (entry.rowIndex + 1)));
+        }
+      }
+    }
+
+    return { ignorableCount: ignorableCount, blockerCount: blockerCount, blockerSamples: blockerSamples };
+  }
+
   // ===== Selected Attachment Download Preparation =====
 
   async function prepareSelectedAttachmentDownloads(options) {
@@ -7233,20 +7518,28 @@
     if (!attachmentCells.length) {
       return {
         ok: false,
-        error: "当前范围没有识别到可改名附件，无法准备下载",
+        error: "当前范围没有识别到可下载附件，无法准备下载",
         range: inspectResult.range,
         items: [],
         summary: {},
       };
     }
 
-    if (inspectResult.summary.nonAttachmentCount > 0) {
+    // Filter non-attachment cells: ignore merge-slave blanks / empty cells;
+    // only block when there are non-attachment cells with meaningful content.
+    var nonAttachFilter = filterNonAttachmentCells(inspectResult);
+    if (nonAttachFilter.blockerCount > 0) {
+      var blockerMsg = "范围中有 " + nonAttachFilter.blockerCount + " 个非附件单元格";
+      if (nonAttachFilter.blockerSamples.length) {
+        blockerMsg += "（如 " + nonAttachFilter.blockerSamples.join(",") + "）";
+      }
+      blockerMsg += "，请只框选附件单元格";
       return {
         ok: false,
-        error: "范围中有 " + inspectResult.summary.nonAttachmentCount + " 个非附件单元格，请只框选附件单元格",
+        error: blockerMsg,
         range: inspectResult.range,
         items: [],
-        summary: { nonAttachmentCount: inspectResult.summary.nonAttachmentCount },
+        summary: { nonAttachmentCount: nonAttachFilter.blockerCount },
       };
     }
 
