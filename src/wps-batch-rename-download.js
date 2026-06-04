@@ -7990,68 +7990,120 @@
       };
     };
 
-    // Locate a cell's DOM element from the WPS sheet. Tries several heuristics and returns
-    // the first match, or null if nothing worked. Each method is named so callers can log
-    // which path actually worked in the wild.
-    function findCellDomElement(rowIndex, colIndex, view) {
-      if (view && typeof view.getCellByRowCol === "function") {
+    // Get a cell's pixel rect from the WPS API. Tries several method names; the kdocs
+    // engine has changed method names across versions, so be defensive. Returns
+    // { top, left, width, height, method } or null if nothing worked.
+    function getCellPixelRect(rowIndex, colIndex, view, sheet) {
+      var candidates = [
+        function () { return view && view.getCellRect && view.getCellRect(rowIndex, colIndex); },
+        function () { return view && view.getCellPosition && view.getCellPosition(rowIndex, colIndex); },
+        function () { return view && view.getCellRectByRC && view.getCellRectByRC(rowIndex, colIndex); },
+        function () { return view && view.getCellInfo && view.getCellInfo(rowIndex, colIndex); },
+        function () { return sheet && sheet.getCellRect && sheet.getCellRect(rowIndex, colIndex); },
+        function () { return sheet && sheet.getCellPosition && sheet.getCellPosition(rowIndex, colIndex); },
+      ];
+      for (var i = 0; i < candidates.length; i++) {
         try {
-          var c = view.getCellByRowCol(rowIndex, colIndex);
-          if (c && c.element) return { el: c.element, method: "view.getCellByRowCol().element" };
-          if (c && c.dom) return { el: c.dom, method: "view.getCellByRowCol().dom" };
-          if (c && typeof c.getElement === "function") {
-            var e = c.getElement();
-            if (e) return { el: e, method: "view.getCellByRowCol().getElement()" };
+          var r = candidates[i]();
+          if (r && (typeof r.top === "number" || typeof r.left === "number" || typeof r.x === "number" || typeof r.y === "number")) {
+            return {
+              top: typeof r.top === "number" ? r.top : (typeof r.y === "number" ? r.y : 0),
+              left: typeof r.left === "number" ? r.left : (typeof r.x === "number" ? r.x : 0),
+              width: r.width || r.w || 80,
+              height: r.height || r.h || 22,
+              method: candidates[i].toString().slice(0, 200),
+            };
           }
         } catch (_) {}
-      }
-      if (view && typeof view.getActiveCell === "function") {
-        try {
-          var ac = view.getActiveCell();
-          if (ac && ac.element) return { el: ac.element, method: "view.getActiveCell().element" };
-        } catch (_) {}
-      }
-      var selectors = [
-        '[data-row-index="' + rowIndex + '"][data-col-index="' + colIndex + '"]',
-        '[data-row="' + rowIndex + '"][data-col="' + colIndex + '"]',
-        '[data-cell-row="' + rowIndex + '"][data-cell-col="' + colIndex + '"]',
-        '[row="' + rowIndex + '"][col="' + colIndex + '"]',
-        '[data-r="' + rowIndex + '"][data-c="' + colIndex + '"]',
-      ];
-      for (var i = 0; i < selectors.length; i++) {
-        var found = document.querySelector(selectors[i]);
-        if (found) return { el: found, method: "querySelector(" + selectors[i] + ")" };
       }
       return null;
     }
 
-    // Smoothly scroll a cell into the viewport. Prefers DOM scrollIntoView (works with
-    // Iris's pulse animation), falls back to coordinate-based window.scrollTo if the
-    // WPS API exposes a cell rect but not a DOM element.
-    function scrollCellIntoView(rowIndex, colIndex, view) {
-      var found = findCellDomElement(rowIndex, colIndex, view);
-      if (found && found.el && typeof found.el.scrollIntoView === "function") {
-        try {
-          found.el.scrollIntoView({ behavior: "smooth", block: "center" });
-          found.el.classList.add("wps-batch-cell-highlight");
-          setTimeout(function () {
-            try { found.el.classList.remove("wps-batch-cell-highlight"); } catch (_) {}
-          }, 2200);
-          return { ok: true, method: found.method };
-        } catch (e) {
-          // fall through to coordinate-based scroll
+    // Find the WPS table's scrollable container. WPS draws the sheet onto a <canvas>
+    // wrapped in one or more divs with overflow:auto. Walk up from the canvas until we
+    // find a scrollable ancestor whose scrollHeight > clientHeight.
+    function findCanvasScrollContainer() {
+      var canvas = document.querySelector("canvas");
+      if (!canvas) return null;
+      var el = canvas.parentElement;
+      while (el && el !== document.body) {
+        var style = window.getComputedStyle(el);
+        var overflowY = (style.overflowY || "").toLowerCase();
+        var overflowX = (style.overflowX || "").toLowerCase();
+        if ((overflowY === "auto" || overflowY === "scroll" || overflowX === "auto" || overflowX === "scroll")
+            && el.scrollHeight > el.clientHeight) {
+          return { container: el, canvas: canvas };
         }
+        el = el.parentElement;
       }
-      if (view && typeof view.getCellRect === "function") {
-        try {
-          var rect = view.getCellRect(rowIndex, colIndex);
-          if (rect && typeof rect.top === "number") {
-            window.scrollTo({ top: Math.max(0, rect.top - 100), behavior: "smooth" });
-            return { ok: true, method: "view.getCellRect -> window.scrollTo" };
-          }
-        } catch (_) {}
+      // Fallback: just the canvas's first ancestor with overflow set at all
+      el = canvas.parentElement;
+      while (el && el !== document.body) {
+        var s2 = window.getComputedStyle(el);
+        if ((s2.overflowY || "").match(/auto|scroll/) || (s2.overflowX || "").match(/auto|scroll/)) {
+          return { container: el, canvas: canvas };
+        }
+        el = el.parentElement;
       }
-      return { ok: false, error: "无法定位单元格 DOM 或坐标" };
+      return null;
+    }
+
+    // Briefly show a 2s highlight ring at the cell's position by overlaying a div
+    // on top of the canvas. Returns the overlay element so callers can clean up.
+    function flashCellOverlay(rect, container) {
+      if (!rect) return null;
+      var overlay = document.createElement("div");
+      overlay.className = "wps-batch-cell-highlight";
+      overlay.style.position = "absolute";
+      overlay.style.pointerEvents = "none";
+      overlay.style.left = (rect.left) + "px";
+      overlay.style.top = (rect.top) + "px";
+      overlay.style.width = rect.width + "px";
+      overlay.style.height = rect.height + "px";
+      overlay.style.zIndex = "99999";
+      // Place inside the scroll container so the highlight follows the cell as user scrolls
+      var parent = container || document.body;
+      if (parent !== document.body && getComputedStyle(parent).position === "static") {
+        parent.style.position = "relative";
+      }
+      parent.appendChild(overlay);
+      setTimeout(function () {
+        try { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); } catch (_) {}
+      }, 2200);
+      return overlay;
+    }
+
+    // Smoothly scroll a cell into the viewport for canvas-rendered WPS tables.
+    // Strategy: get the cell's pixel rect from the WPS API, then scroll the canvas's
+    // scrollable container so the rect is in view. Falls back to estimated position
+    // (row * default height) if no WPS API method works.
+    function scrollCellIntoView(rowIndex, colIndex, view, sheet) {
+      var rect = getCellPixelRect(rowIndex, colIndex, view, sheet);
+      var scroller = findCanvasScrollContainer();
+      if (!scroller) {
+        return { ok: false, error: "未找到 canvas 滚动容器" };
+      }
+      if (!rect) {
+        // Estimate: default WPS row height ~22px, plus a header offset of ~30px.
+        var defaultRowHeight = 22;
+        var headerOffset = 30;
+        rect = {
+          top: headerOffset + rowIndex * defaultRowHeight,
+          left: 40 + colIndex * 80,
+          width: 80,
+          height: defaultRowHeight,
+          method: "estimated",
+        };
+      }
+      var targetTop = Math.max(0, rect.top - 100);
+      try {
+        scroller.container.scrollTo({ top: targetTop, behavior: "smooth" });
+      } catch (_) {
+        // Older browsers
+        scroller.container.scrollTop = targetTop;
+      }
+      flashCellOverlay(rect, scroller.container);
+      return { ok: true, method: rect.method || "unknown", top: rect.top };
     }
 
     kernel.jumpToCell = function (options) {
@@ -8084,7 +8136,8 @@
       if (!selResult.ok) {
         return { ok: false, error: '无法选中单元格 ' + address, method: selResult.method, results: selResult.results };
       }
-      var scrollResult = scrollCellIntoView(rowIndex, colIndex, selResult.view);
+      var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
+      var scrollResult = scrollCellIntoView(rowIndex, colIndex, selResult.view, sheet);
       return {
         ok: true,
         method: selResult.method,
