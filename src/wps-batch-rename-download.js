@@ -7990,6 +7990,70 @@
       };
     };
 
+    // Locate a cell's DOM element from the WPS sheet. Tries several heuristics and returns
+    // the first match, or null if nothing worked. Each method is named so callers can log
+    // which path actually worked in the wild.
+    function findCellDomElement(rowIndex, colIndex, view) {
+      if (view && typeof view.getCellByRowCol === "function") {
+        try {
+          var c = view.getCellByRowCol(rowIndex, colIndex);
+          if (c && c.element) return { el: c.element, method: "view.getCellByRowCol().element" };
+          if (c && c.dom) return { el: c.dom, method: "view.getCellByRowCol().dom" };
+          if (c && typeof c.getElement === "function") {
+            var e = c.getElement();
+            if (e) return { el: e, method: "view.getCellByRowCol().getElement()" };
+          }
+        } catch (_) {}
+      }
+      if (view && typeof view.getActiveCell === "function") {
+        try {
+          var ac = view.getActiveCell();
+          if (ac && ac.element) return { el: ac.element, method: "view.getActiveCell().element" };
+        } catch (_) {}
+      }
+      var selectors = [
+        '[data-row-index="' + rowIndex + '"][data-col-index="' + colIndex + '"]',
+        '[data-row="' + rowIndex + '"][data-col="' + colIndex + '"]',
+        '[data-cell-row="' + rowIndex + '"][data-cell-col="' + colIndex + '"]',
+        '[row="' + rowIndex + '"][col="' + colIndex + '"]',
+        '[data-r="' + rowIndex + '"][data-c="' + colIndex + '"]',
+      ];
+      for (var i = 0; i < selectors.length; i++) {
+        var found = document.querySelector(selectors[i]);
+        if (found) return { el: found, method: "querySelector(" + selectors[i] + ")" };
+      }
+      return null;
+    }
+
+    // Smoothly scroll a cell into the viewport. Prefers DOM scrollIntoView (works with
+    // Iris's pulse animation), falls back to coordinate-based window.scrollTo if the
+    // WPS API exposes a cell rect but not a DOM element.
+    function scrollCellIntoView(rowIndex, colIndex, view) {
+      var found = findCellDomElement(rowIndex, colIndex, view);
+      if (found && found.el && typeof found.el.scrollIntoView === "function") {
+        try {
+          found.el.scrollIntoView({ behavior: "smooth", block: "center" });
+          found.el.classList.add("wps-batch-cell-highlight");
+          setTimeout(function () {
+            try { found.el.classList.remove("wps-batch-cell-highlight"); } catch (_) {}
+          }, 2200);
+          return { ok: true, method: found.method };
+        } catch (e) {
+          // fall through to coordinate-based scroll
+        }
+      }
+      if (view && typeof view.getCellRect === "function") {
+        try {
+          var rect = view.getCellRect(rowIndex, colIndex);
+          if (rect && typeof rect.top === "number") {
+            window.scrollTo({ top: Math.max(0, rect.top - 100), behavior: "smooth" });
+            return { ok: true, method: "view.getCellRect -> window.scrollTo" };
+          }
+        } catch (_) {}
+      }
+      return { ok: false, error: "无法定位单元格 DOM 或坐标" };
+    }
+
     kernel.jumpToCell = function (options) {
       options = options || {};
       var rowIndex = options.rowIndex;
@@ -8020,7 +8084,13 @@
       if (!selResult.ok) {
         return { ok: false, error: '无法选中单元格 ' + address, method: selResult.method, results: selResult.results };
       }
-      return { ok: true, method: selResult.method, address: address };
+      var scrollResult = scrollCellIntoView(rowIndex, colIndex, selResult.view);
+      return {
+        ok: true,
+        method: selResult.method,
+        address: address,
+        scroll: scrollResult,
+      };
     };
 
     return kernel;
