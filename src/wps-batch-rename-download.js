@@ -3498,36 +3498,69 @@
       };
     }
 
-    const attempts = [
+    // WPS requires the activeCell to live inside the current selection range. If we
+    // call setActiveCell first, or only setActiveCell, the engine throws
+    // "activeCell out of selection range!" because the previous selection is from
+    // wherever the user last clicked. We must set the selection FIRST, then set
+    // activeCell within that new selection.
+    const results = [];
+
+    // Phase 1: set the selection to a single-cell range covering the target.
+    // 0-based row/col; the engine expects sri/sci/eri/eci which our createWpsRange
+    // helper already produces.
+    const selectionSetters = [
       ["tool.setSelection(range)", () => tool && tool.setSelection && tool.setSelection(range)],
       ["tool.setSelectionRANGE(range)", () => tool && tool.setSelectionRANGE && tool.setSelectionRANGE(range)],
-      ["tool.selectCell(row,col)", () => tool && tool.selectCell && tool.selectCell(rowIndex, colIndex)],
-      ["app.setSelectionRANGE(range)", () => app && app.setSelectionRANGE && app.setSelectionRANGE(range)],
-      ["app.setSelectionRange(range)", () => app && app.setSelectionRange && app.setSelectionRange(range)],
-      ["view.setSelectionRANGE(range)", () => view && view.setSelectionRANGE && view.setSelectionRANGE(range)],
-      ["view.setSelectionRange(range)", () => view && view.setSelectionRange && view.setSelectionRange(range)],
-      ["view.setSelection(range)", () => view && view.setSelection && view.setSelection(range)],
-      ["view.setActiveCell(row,col)", () => view && view.setActiveCell && view.setActiveCell(rowIndex, colIndex)],
-      ["view.activateCell(row,col)", () => view && view.activateCell && view.activateCell(rowIndex, colIndex)],
       ["sheet.setSelection(range)", () => sheet && sheet.setSelection && sheet.setSelection(range)],
-      ["sheet.setSelectionRANGE(range)", () => sheet && sheet.setSelectionRANGE && sheet.setSelectionRANGE(range)],
-      ["sheet.setActiveCell(row,col)", () => sheet && sheet.setActiveCell && sheet.setActiveCell(rowIndex, colIndex)],
-      ["tool.execute selectCell", () => tool && tool.execute && tool.execute("selectCell", selectionLike)],
+      ["view.setSelection(range)", () => view && view.setSelection && view.setSelection(range)],
+      ["view.setSelectionRANGE(range)", () => view && view.setSelectionRANGE && view.setSelectionRANGE(range)],
+      ["app.setSelectionRANGE(range)", () => app && app.setSelectionRANGE && app.setSelectionRANGE(range)],
     ];
-
-    const results = [];
-    for (const [name, attempt] of attempts) {
+    let selectionMethod = null;
+    for (const [name, setter] of selectionSetters) {
       try {
-        const result = attempt();
-        if (result !== undefined) results.push({ name, ok: true, result: summarizeObjectDeep(result, 2) });
-        else results.push({ name, ok: true, result: undefined });
-        return { ok: true, method: name, range, view, tool, selectionLike, results };
+        const r = setter();
+        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2) });
+        selectionMethod = name;
+        break;
       } catch (error) {
         results.push({ name, ok: false, error: String(error && error.message ? error.message : error).slice(0, 300) });
       }
     }
+    if (!selectionMethod) {
+      return { ok: false, range, view, tool, selectionLike, results, error: "所有 setSelection 方法都失败" };
+    }
 
-    return { ok: false, range, view, tool, selectionLike, results };
+    // Phase 2: now that the selection covers the target cell, set activeCell.
+    // activeCell is now guaranteed to be inside the selection, so no validation error.
+    const activeCellSetters = [
+      ["view.setActiveCell(row,col)", () => view && view.setActiveCell && view.setActiveCell(rowIndex, colIndex)],
+      ["view.activateCell(row,col)", () => view && view.activateCell && view.activateCell(rowIndex, colIndex)],
+      ["sheet.setActiveCell(row,col)", () => sheet && sheet.setActiveCell && sheet.setActiveCell(rowIndex, colIndex)],
+    ];
+    let activeCellMethod = null;
+    for (const [name, setter] of activeCellSetters) {
+      try {
+        const r = setter();
+        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2) });
+        activeCellMethod = name;
+        break;
+      } catch (error) {
+        // setActiveCell is best-effort; selection alone is enough for our scroll logic.
+        results.push({ name, ok: false, error: String(error && error.message ? error.message : error).slice(0, 300) });
+      }
+    }
+
+    return {
+      ok: true,
+      method: selectionMethod + (activeCellMethod ? " + " + activeCellMethod : " (no activeCell)"),
+      range,
+      view,
+      tool,
+      selectionLike,
+      results,
+    };
+  }
   }
 
   function isMetaLikelyForPlanItem(meta, item) {
