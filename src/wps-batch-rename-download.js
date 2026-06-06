@@ -4101,7 +4101,6 @@
       results,
     };
   }
-  }
 
   /**
    * 判断元数据是否可能属于某个计划项
@@ -8964,7 +8963,8 @@
     }
 
     // Briefly show a 2s highlight ring at the cell's position by overlaying a div
-    // on top of the canvas. Returns the overlay element so callers can clean up.
+    // on top of the canvas.
+    // Returns the overlay element so callers can clean up.
     /**
      * 在单元格像素坐标上显示一个 2.2 秒的高亮覆盖层
      * @param {*} rect
