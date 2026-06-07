@@ -4012,6 +4012,49 @@
    * @param {*} colIndex
    * @param {*} options
    */
+  /**
+   * 快速读取当前 WPS selection 快照（用于诊断对比）
+   */
+  function snapshotCurrentSelection() {
+    try {
+      const app = window.APP;
+      const view = getActiveSheetViewLoose();
+      const snap = {};
+
+      // 尝试 view.getSelectionRange()
+      try {
+        if (view && typeof view.getSelectionRange === "function") {
+          const rng = view.getSelectionRange();
+          if (rng) snap.view_getSelectionRange = extractRangeBoundsDeep(rng, 3);
+        }
+      } catch (_) {}
+
+      // 尝试 view.getSelection() -> windowInfo.selection
+      try {
+        if (view && typeof view.getSelection === "function") {
+          const sel = view.getSelection();
+          if (sel && sel.windowInfo && sel.windowInfo.selection && Array.isArray(sel.windowInfo.selection) && sel.windowInfo.selection.length) {
+            snap.view_getSelection_sel0 = extractRangeBoundsDeep(sel.windowInfo.selection[0], 3);
+          }
+          if (sel && sel.windowInfo && sel.windowInfo.activeCell) {
+            snap.view_getSelection_activeCell = extractRangeBoundsDeep(sel.windowInfo.activeCell, 3);
+          }
+        }
+      } catch (_) {}
+
+      // 尝试 view.selections.private.arr[0]
+      try {
+        if (view && view.selections && view.selections.private && view.selections.private.arr && view.selections.private.arr.length) {
+          snap.view_selections_arr0 = extractRangeBoundsDeep(view.selections.private.arr[0], 3);
+        }
+      } catch (_) {}
+
+      return snap;
+    } catch (_) {
+      return { error: "snapshotCurrentSelection 异常" };
+    }
+  }
+
   function selectWpsCell(rowIndex, colIndex, options = {}) {
     const app = window.APP;
     const sheet = app && app.getActiveSheet && app.getActiveSheet();
@@ -4026,6 +4069,14 @@
       row: rowIndex,
       col: colIndex,
     };
+
+    // ===== 诊断：记录目标坐标和 range 对象结构 =====
+    console.log("[selectWpsCell:START]", {
+      target: { rowIndex: rowIndex, colIndex: colIndex, address: colIndexToLetters(colIndex) + (rowIndex + 1) },
+      rangeExists: !!range,
+      rangeSummary: range ? summarizeObjectDeep(range, 2) : null,
+    });
+
     if (!options.allowMutation) {
       return {
         ok: false,
@@ -4038,16 +4089,18 @@
       };
     }
 
-    // WPS requires the activeCell to live inside the current selection range. If we
-    // call setActiveCell first, or only setActiveCell, the engine throws
-    // "activeCell out of selection range!" because the previous selection is from
-    // wherever the user last clicked. We must set the selection FIRST, then set
-    // activeCell within that new selection.
+    // ===== 诊断：记录变更前的 selection 快照 =====
+    var snapBefore = snapshotCurrentSelection();
+    console.log("[selectWpsCell:BEFORE] selection snapshot:", snapBefore);
+
     const results = [];
 
     // Phase 1: set the selection to a single-cell range covering the target.
-    // 0-based row/col; the engine expects sri/sci/eri/eci which our createWpsRange
-    // helper already produces.
+    // 注意：这里不再设置 activeCell。WPS 的单格选区本身就会隐含 activeCell 为
+    // 该格。单独再调用 setActiveCell 可能因为 range 格式 / 坐标体系 / 异步时序
+    // 等差异触发 "activeCell out of selection range!" 错误。
+    // 如果后续 WPS 确认需要显式 activeCell，也必须保证与 selection 完全一致的
+    // 坐标体系，并且只在确认 selection 已真实生效后再设置。
     const selectionSetters = [
       ["tool.setSelection(range)", () => tool && tool.setSelection && tool.setSelection(range)],
       ["tool.setSelectionRANGE(range)", () => tool && tool.setSelectionRANGE && tool.setSelectionRANGE(range)],
@@ -4062,43 +4115,48 @@
         const r = setter();
         results.push({ name, ok: true, result: summarizeObjectDeep(r, 2) });
         selectionMethod = name;
+        console.log("[selectWpsCell:SETTER_OK]", name, { result: summarizeObjectDeep(r, 2) });
         break;
       } catch (error) {
-        results.push({ name, ok: false, error: String(error && error.message ? error.message : error).slice(0, 300) });
+        var errMsg = String(error && error.message ? error.message : error).slice(0, 300);
+        results.push({ name, ok: false, error: errMsg });
+        console.log("[selectWpsCell:SETTER_FAIL]", name, errMsg);
       }
     }
     if (!selectionMethod) {
       return { ok: false, range, view, tool, selectionLike, results, error: "所有 setSelection 方法都失败" };
     }
 
-    // Phase 2: now that the selection covers the target cell, set activeCell.
-    // activeCell is now guaranteed to be inside the selection, so no validation error.
-    const activeCellSetters = [
-      ["view.setActiveCell(row,col)", () => view && view.setActiveCell && view.setActiveCell(rowIndex, colIndex)],
-      ["view.activateCell(row,col)", () => view && view.activateCell && view.activateCell(rowIndex, colIndex)],
-      ["sheet.setActiveCell(row,col)", () => sheet && sheet.setActiveCell && sheet.setActiveCell(rowIndex, colIndex)],
-    ];
-    let activeCellMethod = null;
-    for (const [name, setter] of activeCellSetters) {
-      try {
-        const r = setter();
-        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2) });
-        activeCellMethod = name;
-        break;
-      } catch (error) {
-        // setActiveCell is best-effort; selection alone is enough for our scroll logic.
-        results.push({ name, ok: false, error: String(error && error.message ? error.message : error).slice(0, 300) });
-      }
-    }
+    // ===== 诊断：变更后立刻读取 selection 快照，验证是否确实生效 =====
+    var snapAfter = snapshotCurrentSelection();
+    console.log("[selectWpsCell:AFTER]  selection snapshot:", snapAfter);
+    console.log("[selectWpsCell:VERIFY]", {
+      method: selectionMethod,
+      target: { rowIndex: rowIndex, colIndex: colIndex },
+      before: snapBefore,
+      after: snapAfter,
+    });
+
+    // Phase 2 (activeCell) 已移除：
+    // 之前的 view.setActiveCell / view.activateCell / sheet.setActiveCell 调用
+    // 在某些 WPS 版本下会触发 "activeCell out of selection range!" 错误。
+    // 原因可能是：(a) range 内部结构与 WPS 预期不完全一致，导致 selection
+    // 实际未更新；(b) selection 更新异步但 activeCell 设置同步执行；
+    // (c) activeCell setter 使用了与 selection 不同的坐标校验路径。
+    //
+    // 当前方案：仅设置单格选区，WPS 会自行将 activeCell 指向该格。
+    // selection alone is enough for our scroll logic.
 
     return {
       ok: true,
-      method: selectionMethod + (activeCellMethod ? " + " + activeCellMethod : " (no activeCell)"),
+      method: selectionMethod + " (selection-only, no activeCell)",
       range,
       view,
       tool,
       selectionLike,
       results,
+      // 附加诊断快照，供调用方（如 jumpToCell）使用
+      _diag: { snapBefore: snapBefore, snapAfter: snapAfter },
     };
   }
 
@@ -9039,7 +9097,7 @@
      */
     kernel.jumpToCell = function (options) {
       options = options || {};
-      console.log("options", options);
+      console.log("[jumpToCell:START] options", options);
       var rowIndex = options.rowIndex;
       var colIndex = options.colIndex;
       var address = options.address;
@@ -9064,17 +9122,29 @@
       if (!address) {
         address = colIndexToLetters(colIndex) + (rowIndex + 1);
       }
+
+      console.log("[jumpToCell:RESOLVED] address=" + address + " rowIndex=" + rowIndex + " colIndex=" + colIndex);
+
+      // Phase 1: 仅设置单格选区（不设置 activeCell，避免 WPS 内部
+      // "activeCell out of selection range!" 校验错误）
       var selResult = selectWpsCell(rowIndex, colIndex, { allowMutation: true });
+      console.log("[jumpToCell:SELECTION] ok=" + selResult.ok + " method=" + selResult.method + " results=" + (selResult.results ? selResult.results.length + " attempts" : "n/a"));
+
       if (!selResult.ok) {
         return { ok: false, error: '无法选中单元格 ' + address, method: selResult.method, results: selResult.results };
       }
+
+      // Phase 2: 滚动到视口（不依赖 activeCell，仅使用 selection 结果）
       var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
       var scrollResult = scrollCellIntoView(rowIndex, colIndex, selResult.view, sheet);
+      console.log("[jumpToCell:SCROLL] ok=" + scrollResult.ok + " method=" + (scrollResult.method || "n/a"));
+
       return {
         ok: true,
         method: selResult.method,
         address: address,
         scroll: scrollResult,
+        _diag: selResult._diag || null,
       };
     };
 
