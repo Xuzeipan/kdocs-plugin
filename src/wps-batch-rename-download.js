@@ -49,14 +49,25 @@
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const STORAGE_KEY = "WPSBatchState:v3";
 
+  /**
+   * 在控制台输出带 WPSBatch 前缀的日志
+   * @param {*} args
+   */
   function log(...args) {
     console.log("[WPSBatch]", ...args);
   }
 
+  /**
+   * 在控制台输出带 WPSBatch 前缀的警告
+   * @param {*} args
+   */
   function warn(...args) {
     console.warn("[WPSBatch]", ...args);
   }
 
+  /**
+   * 从 localStorage 加载之前保存的状态
+   */
   function loadPersistedState() {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") || {};
@@ -65,6 +76,10 @@
     }
   }
 
+  /**
+   * 将状态补丁保存到 localStorage，并附带时间戳
+   * @param {*} patch
+   */
   function savePersistedState(patch) {
     try {
       const state = { ...loadPersistedState(), ...patch, updatedAt: new Date().toISOString() };
@@ -76,6 +91,10 @@
     }
   }
 
+  /**
+   * 将持久化的探针记录恢复到探针对象中
+   * @param {*} probe
+   */
   function restorePersistedProbeInto(probe) {
     const state = loadPersistedState();
     if (!state.probe) return;
@@ -85,6 +104,10 @@
     probe.nextId = Number(state.probe.nextId || 1);
   }
 
+  /**
+   * 将探针数据持久化到 localStorage，只保留最近的项目
+   * @param {*} probe
+   */
   function persistProbe(probe) {
     if (!probe) return;
     savePersistedState({
@@ -97,6 +120,10 @@
     });
   }
 
+  /**
+   * 清理并规范化文本，去除多余空白和特殊字符
+   * @param {*} value
+   */
   function cleanText(value) {
     return String(value || "")
       .replace(/\u00a0/g, " ")
@@ -105,6 +132,10 @@
       .trim();
   }
 
+  /**
+   * 将字符串清理为安全的文件名
+   * @param {*} name
+   */
   function sanitizeFilename(name) {
     return cleanText(name)
       .replace(/[\\/:*?"<>|]/g, "-")
@@ -114,12 +145,21 @@
       .replace(/\.+$/, "");
   }
 
+  /**
+   * 确保文件名包含扩展名，需要时从 URL 推断
+   * @param {*} name
+   * @param {*} url
+   */
   function ensureExt(name, url) {
     if (/\.[a-z0-9]{2,8}$/i.test(name)) return name;
     const fromUrl = String(url || "").match(/\.([a-z0-9]{2,8})(?:[?#]|$)/i);
     return name + (fromUrl ? "." + fromUrl[1] : CONFIG.defaultExt);
   }
 
+  /**
+   * 将 TSV 文本拆分为二维数组，并清理每个单元格
+   * @param {*} text
+   */
   function splitTsv(text) {
     return String(text || "")
       .trim()
@@ -128,6 +168,10 @@
       .filter((row) => row.some(Boolean));
   }
 
+  /**
+   * 规范化数据文本，解码 Unicode 转义并统一连字符
+   * @param {*} text
+   */
   function normalizeDataText(text) {
     return String(text || "")
       .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => {
@@ -144,10 +188,18 @@
       .trim();
   }
 
+  /**
+   * 从数组中提取去重后的非空字符串
+   * @param {*} list
+   */
   function unique(list) {
     return Array.from(new Set(list.map(normalizeDataText).filter(Boolean)));
   }
 
+  /**
+   * 从文本中提取"外箱标"和"预约信"附件字符串
+   * @param {*} text
+   */
   function extractAttachmentStringsFromText(text) {
     const normalized = normalizeDataText(text);
     const outer = normalized.match(/外箱标\s*-\s*\d{7,12}\s*-\s*\d+\s*箱/g) || [];
@@ -160,6 +212,10 @@
     };
   }
 
+  /**
+   * 将多个附件字符串桶合并为一个
+   * @param {*} buckets
+   */
   function mergeStringBuckets(...buckets) {
     return {
       outer: unique(buckets.flatMap((bucket) => bucket.outer || [])),
@@ -167,6 +223,10 @@
     };
   }
 
+  /**
+   * 从提取的附件字符串构建重命名/下载任务计划
+   * @param {*} bucket
+   */
   function buildPlanFromAttachmentStrings(bucket) {
     const plan = [];
 
@@ -207,6 +267,10 @@
     });
   }
 
+  /**
+   * 将 WPS 数据结构中的单元格值规范化为字符串
+   * @param {*} value
+   */
   function normalizeGridValue(value) {
     if (value == null) return "";
     if (typeof value === "number") return String(value);
@@ -219,6 +283,10 @@
     return "";
   }
 
+  /**
+   * 根据解析的表格行和表头映射构建任务计划
+   * @param {*} tableRows
+   */
   function buildPlanFromTableRows(tableRows) {
     const rows = (tableRows || []).map((row) => row.map(normalizeGridValue));
     if (rows.length < 2) return [];
@@ -294,6 +362,10 @@
     });
   }
 
+  /**
+   * 如果纯文本包含预期表头，则提取类表格行
+   * @param {*} text
+   */
   function extractRowsFromPlainText(text) {
     const normalized = String(text || "").replace(/\u00a0/g, " ");
     if (!/(货件号|时间|箱数)/.test(normalized)) return [];
@@ -308,6 +380,10 @@
     return [];
   }
 
+  /**
+   * 将零基列索引转换为 Excel 风格的列字母（A、B…Z、AA）
+   * @param {*} index
+   */
   function columnNameFromIndex(index) {
     let value = index + 1;
     let name = "";
@@ -319,6 +395,9 @@
     return name;
   }
 
+  /**
+   * 尝试通过多种 WPS Workbook API 变体读取表格值
+   */
   function tryWorkbookApiRows() {
     const endCol = columnNameFromIndex(Math.max(0, Number(CONFIG.maxTableCols || 60) - 1));
     const endRow = Math.max(200, Math.min(Number(CONFIG.maxTableRows || 10000), 2000));
@@ -358,6 +437,11 @@
     return [];
   }
 
+  /**
+   * 依次尝试调用对象上返回字符串的方法列表
+   * @param {*} obj
+   * @param {*} names
+   */
   function callStringMethod(obj, names) {
     if (!obj) return "";
     for (const name of names) {
@@ -372,6 +456,11 @@
     return "";
   }
 
+  /**
+   * 使用多种原生 API 尝试读取 WPS 单元格文本
+   * @param {*} row
+   * @param {*} col
+   */
   function getWpsCellText(row, col) {
     const attempts = [];
 
@@ -408,6 +497,9 @@
     return "";
   }
 
+  /**
+   * 判断当前环境是否具备 WPS 单元格读取 API
+   */
   function hasWpsCellReadApi() {
     const app = window.APP;
     if (!app) return false;
@@ -420,6 +512,11 @@
     }
   }
 
+  /**
+   * 通过 WPS 原生单元格接口读取行数据，遇到空行自动停止
+   * @param {*} maxRows
+   * @param {*} maxCols
+   */
   function tryWpsNativeCellRows(maxRows = CONFIG.maxTableRows, maxCols = CONFIG.maxTableCols) {
     if (!hasWpsCellReadApi()) return { rows: [], rowRecords: [] };
 
@@ -467,6 +564,9 @@
     return { rows: rows, rowRecords: rowRecords };
   }
 
+  /**
+   * 扫描 window 状态，寻找包含 row/col/text 的类单元格对象
+   */
   function extractCellLikeRecordsFromState() {
     const started = Date.now();
     const seen = new WeakSet();
@@ -478,6 +578,11 @@
     const colKeys = ["col", "c", "ci", "colIndex", "colidx"];
     const valueKeys = ["text", "value", "v", "m", "name", "label", "display", "formattedValue"];
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} depth
+     */
     function enqueue(value, depth) {
       if (value == null) return;
       const type = typeof value;
@@ -489,6 +594,11 @@
       queue.push({ value, depth });
     }
 
+    /**
+     * 从对象中按键名列表取值
+     * @param {*} obj
+     * @param {*} keys
+     */
     function pick(obj, keys) {
       for (const key of keys) {
         if (obj[key] != null) return obj[key];
@@ -568,6 +678,10 @@
     return records;
   }
 
+  /**
+   * 根据类单元格记录和偏移猜测重建表格行
+   * @param {*} records
+   */
   function rowsFromCellLikeRecords(records) {
     if (!records || !records.length) return [];
 
@@ -613,6 +727,10 @@
     return [];
   }
 
+  /**
+   * 裁剪表格行，去除空列并过滤空行
+   * @param {*} input
+   */
   function trimTableRows(input) {
     // Accept either rows array or { rows, rowRecords } object
     var rawRows = Array.isArray(input) ? input : (input && input.rows ? input.rows : []);
@@ -645,6 +763,9 @@
     return filteredRecords ? { rows: trimmed, rowRecords: filteredRecords } : trimmed;
   }
 
+  /**
+   * 依次尝试原生 API、Workbook API、内部状态、DOM 文本等多种数据源构建计划
+   */
   function buildPlanFromTableDataDirectly() {
     var nativeResult = trimTableRows(tryWpsNativeCellRows());
     var nativeRows = Array.isArray(nativeResult) ? nativeResult : nativeResult.rows;
@@ -701,6 +822,9 @@
     return { plan: [], source: "none", rows: [], records };
   }
 
+  /**
+   * 通过扫描 DOM 元素属性提取附件字符串
+   */
   function extractFromDomText() {
     const pieces = [];
 
@@ -722,12 +846,19 @@
     return extractAttachmentStringsFromText(pieces.join("\n"));
   }
 
+  /**
+   * 判断在深度扫描时是否应跳过某个 window 键
+   * @param {*} key
+   */
   function shouldSkipWindowKey(key) {
     return /^(window|self|top|parent|frames|document|location|history|navigator|screen|visualViewport|localStorage|sessionStorage|indexedDB|crypto|performance|customElements)$/i.test(
       key
     );
   }
 
+  /**
+   * 深度扫描 window 对象，寻找匹配附件模式的字符串
+   */
   function deepScanWindowStrings() {
     const started = Date.now();
     const seen = new WeakSet();
@@ -735,6 +866,12 @@
     const strings = [];
     let scanned = 0;
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} path
+     * @param {*} depth
+     */
     function enqueue(value, path, depth) {
       if (value == null) return;
       const type = typeof value;
@@ -818,6 +955,10 @@
     return bucket;
   }
 
+  /**
+   * 为任意 JavaScript 值生成简短的字符串摘要
+   * @param {*} value
+   */
   function summarizeValue(value) {
     if (value == null) return value;
     if (typeof value === "string") return value.slice(0, 500);
@@ -831,6 +972,10 @@
     return String(value);
   }
 
+  /**
+   * 将对象的自身属性摘要为普通对象
+   * @param {*} obj
+   */
   function summarizeObject(obj) {
     const out = {};
     if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return out;
@@ -853,6 +998,12 @@
     return out;
   }
 
+  /**
+   * 递归深度摘要对象，支持循环引用检测
+   * @param {*} obj
+   * @param {*} depth
+   * @param {*} seen
+   */
   function summarizeObjectDeep(obj, depth = 2, seen = new WeakSet()) {
     if (obj == null) return obj;
     const type = typeof obj;
@@ -906,10 +1057,17 @@
     return out;
   }
 
+  /**
+   * 在文本中查找潜在的附件 ID（10-24 位字母数字组合）
+   * @param {*} text
+   */
   function findIdsInText(text) {
     return unique(String(text || "").match(/\b[A-Z0-9]{10,24}\b/g) || []).filter((id) => /[A-Z]/.test(id));
   }
 
+  /**
+   * 深度扫描 window 状态，收集附件相关字符串的路径和命中信息
+   */
   function deepScanStateDetails() {
     const started = Date.now();
     const seen = new WeakSet();
@@ -917,6 +1075,13 @@
     const hits = [];
     let scanned = 0;
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} path
+     * @param {*} depth
+     * @param {*} parent
+     */
     function enqueue(value, path, depth, parent) {
       if (value == null) return;
       const type = typeof value;
@@ -1003,6 +1168,9 @@
     return { scanned, hits: hits.slice(0, 120) };
   }
 
+  /**
+   * 针对附件元数据深度扫描 window 状态
+   */
   function deepScanAttachmentDetails() {
     const started = Date.now();
     const seen = new WeakSet();
@@ -1010,6 +1178,13 @@
     const hits = [];
     let scanned = 0;
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} path
+     * @param {*} depth
+     * @param {*} ancestors
+     */
     function enqueue(value, path, depth, ancestors) {
       if (value == null) return;
       const type = typeof value;
@@ -1102,6 +1277,9 @@
     return { scanned, hits: hits.slice(0, 200) };
   }
 
+  /**
+   * 从性能条目收集网络探测的候选 URL
+   */
   function performanceCandidateUrls() {
     const entries = performance.getEntriesByType("resource") || [];
     const likely = /(sheet|cell|workbook|attachment|file|download|link|docs|api|record|content|metadata|object)/i;
@@ -1121,6 +1299,9 @@
     ).slice(0, CONFIG.networkProbeMaxUrls);
   }
 
+  /**
+   * 获取并扫描网络候选 URL 以查找附件数据
+   */
   async function extractFromNetworkResources() {
     const urls = performanceCandidateUrls();
     const buckets = [];
@@ -1146,6 +1327,9 @@
     return mergeStringBuckets(...buckets);
   }
 
+  /**
+   * 从页面状态、DOM 和网络自动发现附件计划
+   */
   async function buildPlanDirectlyFromPage() {
     if (CONFIG.preferTableCells !== false) {
       const tableResult = buildPlanFromTableDataDirectly();
@@ -1184,6 +1368,9 @@
     return plan;
   }
 
+  /**
+   * 生成当前表格状态的文本报告
+   */
   function makeTableStateReportText() {
     const result = buildPlanFromTableDataDirectly();
     window.WPSBatch.lastTableReadResult = result;
@@ -1222,6 +1409,9 @@
     return lines.join("\n");
   }
 
+  /**
+   * 收集并报告当前表格状态，用于诊断
+   */
   async function reportTableState() {
     const text = makeTableStateReportText();
     window.WPSBatch.lastTableStateReportText = text;
@@ -1235,6 +1425,10 @@
     return text;
   }
 
+  /**
+   * 生成附件单元格 API 表面的文本报告
+   * @param {*} limit
+   */
   function makeAttachmentCellApiReportText(limit = 4) {
     const tableResult = buildPlanFromTableDataDirectly();
     const plan = tableResult.plan.slice(0, limit);
@@ -1296,6 +1490,10 @@
     return lines.join("\n");
   }
 
+  /**
+   * 探测并报告可用的附件单元格 API
+   * @param {*} limit
+   */
   async function reportAttachmentCellApis(limit = 4) {
     const text = makeAttachmentCellApiReportText(limit);
     window.WPSBatch.lastAttachmentCellApiReportText = text;
@@ -1309,6 +1507,10 @@
     return text;
   }
 
+  /**
+   * 报告通过范围查询获取附件元数据的结果
+   * @param {*} limit
+   */
   async function reportAttachmentRangeQueries(limit = 4) {
     const tableResult = buildPlanFromTableDataDirectly();
     const plan = tableResult.plan.slice(0, limit);
@@ -1366,6 +1568,9 @@
     return text;
   }
 
+  /**
+   * 报告附件 API 探测的结果
+   */
   async function reportAttachmentApiProbe() {
     const result = await fetchAttachmentApiCandidates();
     const lines = [];
@@ -1418,6 +1623,9 @@
     return text;
   }
 
+  /**
+   * 报告从探针钩子收集的附件候选
+   */
   async function reportProbeAttachmentCandidates() {
     const result = collectAttachmentCandidatesFromProbe();
     const lines = [];
@@ -1461,6 +1669,10 @@
     return text;
   }
 
+  /**
+   * 获取函数源代码的短预览
+   * @param {*} fn
+   */
   function functionSourcePreview(fn) {
     try {
       return Function.prototype.toString.call(fn).slice(0, 220).replace(/\s+/g, " ");
@@ -1469,6 +1681,13 @@
     }
   }
 
+  /**
+   * 检查对象表面的方法和属性
+   * @param {*} name
+   * @param {*} obj
+   * @param {*} depth
+   * @param {*} seen
+   */
   function inspectObjectSurface(name, obj, depth = 1, seen = new WeakSet()) {
     const rows = [];
     if (!obj || (typeof obj !== "object" && typeof obj !== "function")) return rows;
@@ -1515,6 +1734,9 @@
     return rows;
   }
 
+  /**
+   * 查找可能包含附件 API 的有趣全局对象
+   */
   function findInterestingGlobalSurfaces() {
     const roots = {
       APP: window.APP,
@@ -1544,12 +1766,19 @@
     return rows.slice(0, 1200);
   }
 
+  /**
+   * 尝试调用无参方法以发现单元格线索
+   */
   async function tryCallNoArgMethodsForCellClues() {
     const candidates = findInterestingGlobalSurfaces()
       .filter((row) => row.type === "function")
       .filter((row) => /active|selection|select|range|cell|sheet|value|text|formula|addr|address/i.test(row.path))
       .slice(0, 250);
 
+    /**
+     * 解析对象路径
+     * @param {*} path
+     */
     function resolvePath(path) {
       const parts = path.split(".");
       let obj = window;
@@ -1561,6 +1790,10 @@
       return obj;
     }
 
+    /**
+     * 解析 this 指向
+     * @param {*} path
+     */
     function resolveThis(path) {
       const parts = path.split(".");
       parts.pop();
@@ -1605,6 +1838,9 @@
     return results;
   }
 
+  /**
+   * 生成 WPS API 表面的文本报告
+   */
   async function makeWpsApiReportText() {
     const surfaces = findInterestingGlobalSurfaces();
     const callResults = await tryCallNoArgMethodsForCellClues();
@@ -1650,6 +1886,9 @@
     return lines.join("\n");
   }
 
+  /**
+   * 探测并报告当前 WPS API 状态
+   */
   async function reportWpsApiState() {
     const text = await makeWpsApiReportText();
     window.WPSBatch.lastWpsApiReportText = text;
@@ -1663,6 +1902,11 @@
     return text;
   }
 
+  /**
+   * 根据表头和行数组创建普通对象
+   * @param {*} headers
+   * @param {*} row
+   */
   function rowObject(headers, row) {
     const out = {};
     headers.forEach((header, index) => {
@@ -1671,6 +1915,11 @@
     return out;
   }
 
+  /**
+   * 通过别名匹配在表头中查找列索引
+   * @param {*} headers
+   * @param {*} names
+   */
   function findColumn(headers, names) {
     const normalized = headers.map(cleanText);
     for (const name of names) {
@@ -1680,12 +1929,20 @@
     return -1;
   }
 
+  /**
+   * 从值中解析货件号（7-12 位数字）
+   * @param {*} values
+   */
   function parseShipmentNo(...values) {
     const joined = values.map(cleanText).join(" ");
     const match = joined.match(/\b\d{7,12}\b/);
     return match ? match[0] : "";
   }
 
+  /**
+   * 从值或文本中解析箱数
+   * @param {*} values
+   */
   function parseBoxCount(...values) {
     const joined = values.map(cleanText).join(" ");
     const match = joined.match(/(?:-|^|\s)(\d+)\s*箱/);
@@ -1694,6 +1951,10 @@
     return numberOnly ? numberOnly[0] : "";
   }
 
+  /**
+   * 从值中解析中文日期文本，如"X月Y日"
+   * @param {*} values
+   */
   function parseDateText(...values) {
     const joined = values.map(cleanText).join(" ");
     const match = joined.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
@@ -1701,6 +1962,10 @@
     return `${Number(match[1])}月${Number(match[2])}日`;
   }
 
+  /**
+   * 从用户粘贴的 TSV 文本构建任务计划
+   * @param {*} tsvText
+   */
   function buildPlanFromTsv(tsvText) {
     const rows = splitTsv(tsvText);
     if (rows.length < 2) {
@@ -1766,6 +2031,9 @@
     return plan;
   }
 
+  /**
+   * 从剪贴板读取 TSV，失败时弹出输入框回退
+   */
   async function readTsvFromClipboardOrPrompt() {
     try {
       if (navigator.clipboard && navigator.clipboard.readText) {
@@ -1781,6 +2049,10 @@
     return pasted;
   }
 
+  /**
+   * 获取 DOM 元素的清理后文本内容
+   * @param {*} el
+   */
   function getElementText(el) {
     return cleanText(
       [
@@ -1797,6 +2069,9 @@
     );
   }
 
+  /**
+   * 通过查询 DOM 查找附件候选
+   */
   function findDomAttachmentCandidates() {
     const selector = [
       "a[href]",
@@ -1846,6 +2121,11 @@
     return candidates;
   }
 
+  /**
+   * 按 ID 或文本将计划项与候选列表匹配
+   * @param {*} item
+   * @param {*} candidates
+   */
   function matchCandidate(item, candidates) {
     const source = cleanText(item.sourceText);
     const key = item.key;
@@ -1863,6 +2143,10 @@
     });
   }
 
+  /**
+   * 规范化附件显示名称以便比较
+   * @param {*} value
+   */
   function normalizeAttachmentDisplayName(value) {
     return normalizeDataText(value)
       .replace(/^[\s📄📎]+/u, "")
@@ -1871,6 +2155,10 @@
       .toLowerCase();
   }
 
+  /**
+   * 获取计划项的所有可能别名字符串
+   * @param {*} item
+   */
   function getPlanSourceAliases(item) {
     const aliases = [
       item.sourceText,
@@ -1885,11 +2173,27 @@
     return unique(aliases.map(normalizeAttachmentDisplayName));
   }
 
+  /**
+   * 从多种来源收集附件 ID 候选
+   */
   function collectAttachmentIdCandidates() {
     const details = deepScanAttachmentDetails();
     const candidates = [];
     const seen = new Set();
 
+    /**
+     * 将候选对象加入列表
+     * @param {*} { type
+     * @param {*} key
+     * @param {*} id
+     * @param {*} ids
+     * @param {*} text
+     * @param {*} fileSize
+     * @param {*} aType
+     * @param {*} fileName
+     * @param {*} path
+     * @param {*} source }
+     */
     function addCandidate({ type, key, id, ids, text, fileSize, aType, fileName, path, source }) {
       if (!type || !id || !text) return;
       const dedupeKey = `${type}:${normalizeAttachmentDisplayName(text)}:${id}`;
@@ -1944,10 +2248,16 @@
     return { scanned: details.scanned, candidates };
   }
 
+  /**
+   * 获取当前文档链接 ID
+   */
   function getCurrentLinkId() {
     return (location.pathname.match(/\/l\/([^/?#]+)/) || [])[1] || (window.fileInfo && window.fileInfo.link_id) || "";
   }
 
+  /**
+   * 获取当前文件 ID
+   */
   function getCurrentFileId() {
     return (
       (window.fileInfo && (window.fileInfo.id || window.fileInfo.fileid || window.fileInfo.unique_id)) ||
@@ -1956,12 +2266,22 @@
     );
   }
 
+  /**
+   * 从 API 响应体中提取附件候选
+   * @param {*} payload
+   * @param {*} sourceUrl
+   */
   function extractAttachmentCandidatesFromApiPayload(payload, sourceUrl) {
     const candidates = [];
     const seen = new WeakSet();
     const queue = [{ value: payload, path: "" }];
     let scanned = 0;
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} path
+     */
     function enqueue(value, path) {
       if (value == null) return;
       const type = typeof value;
@@ -2068,6 +2388,9 @@
     return candidates;
   }
 
+  /**
+   * 从 WPS API 端点获取附件候选
+   */
   async function fetchAttachmentApiCandidates() {
     const linkId = getCurrentLinkId();
     const fileId = getCurrentFileId();
@@ -2114,6 +2437,9 @@
     return { endpointResults, candidates };
   }
 
+  /**
+   * 异步包装：收集附件 ID 候选
+   */
   async function collectAttachmentIdCandidatesAsync() {
     const stateResult = collectAttachmentIdCandidates();
     const apiResult = await fetchAttachmentApiCandidates();
@@ -2136,6 +2462,11 @@
     };
   }
 
+  /**
+   * 从附件/附言文本创建候选对象
+   * @param {*} text
+   * @param {*} source
+   */
   function candidateFromAnnexText(text, source) {
     const raw = String(text || "");
     const oId = (raw.match(/[?&]oId=([A-Z0-9]{10,24})/i) || [])[1] || "";
@@ -2164,12 +2495,19 @@
     };
   }
 
+  /**
+   * 从探针记录收集附件候选
+   */
   function collectAttachmentCandidatesFromProbe() {
     const probe = window.WPSBatch && window.WPSBatch.probe ? window.WPSBatch.probe : {};
     const candidates = [];
     const downloadIds = [];
     const seen = new Set();
 
+    /**
+     * 将候选添加到集合
+     * @param {*} candidate
+     */
     function add(candidate) {
       if (!candidate || !candidate.id) return;
       const key = `${candidate.type || "unknown"}:${candidate.id}:${candidate.normalizedText || ""}`;
@@ -2194,6 +2532,10 @@
     return { candidates, downloadIds };
   }
 
+  /**
+   * 根据探针数据构建附件映射表
+   * @param {*} options
+   */
   async function makeAttachmentMapFromProbe(options = {}) {
     const plan = await buildPlanDirectlyFromPage();
     const probeResult = collectAttachmentCandidatesFromProbe();
@@ -2280,6 +2622,9 @@
     return attachmentMap;
   }
 
+  /**
+   * 加载之前持久化的附件映射表
+   */
   function loadPersistedAttachmentMap() {
     const state = loadPersistedState();
     const map = state.lastAutoAttachmentMap || null;
@@ -2294,6 +2639,12 @@
     return map;
   }
 
+  /**
+   * 从候选中为计划项挑选最佳附件 ID
+   * @param {*} item
+   * @param {*} candidates
+   * @param {*} usedIds
+   */
   function pickAttachmentIdForPlanItem(item, candidates, usedIds) {
     const aliases = getPlanSourceAliases(item);
 
@@ -2318,6 +2669,10 @@
     return { candidate: null, match: "missing" };
   }
 
+  /**
+   * 安全解码 URI 组件，失败时返回原字符串
+   * @param {*} value
+   */
   function decodeURIComponentSafe(value) {
     if (!value) return "";
     try {
@@ -2327,12 +2682,23 @@
     }
   }
 
+  /**
+   * 递归扫描对象以查找附件元数据
+   * @param {*} root
+   * @param {*} maxDepth
+   */
   function scanObjectForAttachmentMeta(root, maxDepth = 6) {
     const seen = new WeakSet();
     const queue = [{ value: root, depth: 0, path: "" }];
     const strings = [];
     let scanned = 0;
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} depth
+     * @param {*} path
+     */
     function enqueue(value, depth, path) {
       if (value == null) return;
       const type = typeof value;
@@ -2418,6 +2784,12 @@
 
   // ===== Exact-cell link run extraction (no plan matching) =====
 
+  /**
+   * 从单元格链接运行值中提取附件元数据
+   * @param {*} rawValue
+   * @param {*} cellText
+   * @param {*} source
+   */
   function extractAttachmentMetaFromExactCellLinkRuns(rawValue, cellText, source) {
     if (!rawValue) return null;
 
@@ -2427,11 +2799,20 @@
     var strings = [];
     var scanned = 0;
 
+    /**
+     * 将字符串添加到集合
+     * @param {*} value
+     */
     function addString(value) {
       var text = String(value || "");
       if (/(kw:annex|外箱标|预约信|fileName|fileSize|oId=|address|subFileId)/i.test(text)) strings.push(text);
     }
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} depth
+     */
     function enqueue(value, depth) {
       if (value == null || depth > 7) return;
       var type = typeof value;
@@ -2535,17 +2916,33 @@
     };
   }
 
+  /**
+   * 扫描链接运行值以获取附件元数据
+   * @param {*} root
+   * @param {*} item
+   * @param {*} matchName
+   */
   function scanLinkRunValueForAttachmentMeta(root, item, matchName) {
     const seen = new WeakSet();
     const queue = [{ value: root, depth: 0, path: "" }];
     const strings = [];
     let scanned = 0;
 
+    /**
+     * 将字符串添加到集合
+     * @param {*} value
+     */
     function addString(value) {
       const text = String(value || "");
       if (/(kw:annex|外箱标|预约信|fileName|fileSize|oId=|address|subFileId)/i.test(text)) strings.push(text);
     }
 
+    /**
+     * 将值加入扫描队列
+     * @param {*} value
+     * @param {*} depth
+     * @param {*} path
+     */
     function enqueue(value, depth, path) {
       if (value == null || depth > 7) return;
       const type = typeof value;
@@ -2632,6 +3029,11 @@
     return metaFromSelectedScan(scan, item, matchName);
   }
 
+  /**
+   * 通过临时锚点元素按 URL 下载文件
+   * @param {*} url
+   * @param {*} filename
+   */
   async function downloadByUrl(url, filename) {
     const absoluteUrl = new URL(url, location.href).href;
     const response = await fetch(absoluteUrl, {
@@ -2656,6 +3058,11 @@
     }, 2000);
   }
 
+  /**
+   * 使用匹配到的候选为计划项下载文件
+   * @param {*} plan
+   * @param {*} candidates
+   */
   async function downloadPlan(plan, candidates) {
     const results = [];
 
@@ -2690,6 +3097,10 @@
     return results;
   }
 
+  /**
+   * 将计划输出到控制台，用于调试
+   * @param {*} plan
+   */
   function printPlan(plan) {
     const rows = plan.map((item) => ({
       row: item.row,
@@ -2700,6 +3111,10 @@
     console.table(rows);
   }
 
+  /**
+   * 将候选列表输出到控制台
+   * @param {*} candidates
+   */
   function printCandidates(candidates) {
     console.table(
       candidates.slice(0, 80).map((candidate, index) => ({
@@ -2711,6 +3126,10 @@
     );
   }
 
+  /**
+   * 生成人类可读的执行报告文本
+   * @param {*} payload
+   */
   function makeReportText(payload) {
     const { plan = [], candidates = [], results = [], error = null } = payload || {};
     const lines = [];
@@ -2775,6 +3194,10 @@
     return lines.join("\n");
   }
 
+  /**
+   * 将报告输出到控制台并复制到剪贴板
+   * @param {*} payload
+   */
   async function publishReport(payload) {
     const text = makeReportText(payload);
     window.WPSBatch.lastReportText = text;
@@ -2791,6 +3214,9 @@
     return text;
   }
 
+  /**
+   * 生成探针钩子活动的报告
+   */
   function makeProbeReportText() {
     const probe = window.WPSBatch && window.WPSBatch.probe ? window.WPSBatch.probe : {};
     const lines = [];
@@ -2861,6 +3287,9 @@
     return lines.join("\n");
   }
 
+  /**
+   * 生成附件状态的报告
+   */
   function makeAttachmentStateReportText() {
     const details = deepScanAttachmentDetails();
     const lines = [];
@@ -2900,6 +3329,9 @@
     return lines.join("\n");
   }
 
+  /**
+   * 收集并报告当前附件状态
+   */
   async function reportAttachmentState() {
     const text = makeAttachmentStateReportText();
     window.WPSBatch.lastAttachmentStateReportText = text;
@@ -2913,6 +3345,10 @@
     return text;
   }
 
+  /**
+   * 根据 subFileId 解析附件的直接下载 URL
+   * @param {*} subFileId
+   */
   async function resolveAttachmentDownloadUrl(subFileId) {
     const linkId = (location.pathname.match(/\/l\/([^/?#]+)/) || [])[1] || (window.fileInfo && window.fileInfo.link_id);
     if (!linkId) throw new Error("无法识别当前 WPS 链接 ID。");
@@ -2925,12 +3361,21 @@
     return data;
   }
 
+  /**
+   * 通过 subFileId 下载单个附件
+   * @param {*} subFileId
+   * @param {*} filename
+   */
   async function downloadAttachmentById(subFileId, filename) {
     const info = await resolveAttachmentDownloadUrl(subFileId);
     await downloadByUrl(info.download_url, filename);
     return info;
   }
 
+  /**
+   * 使用 ID 到文件名的映射下载附件
+   * @param {*} idMap
+   */
   async function downloadByIdMap(idMap) {
     const plan = await buildPlanDirectlyFromPage();
     const results = [];
@@ -2965,6 +3410,9 @@
     return results;
   }
 
+  /**
+   * 根据当前计划构建期望文件名映射
+   */
   async function makeDesiredNameMap() {
     const plan = await buildPlanDirectlyFromPage();
     const map = { outer: {}, appointment: {}, flat: {} };
@@ -2990,6 +3438,10 @@
     return map;
   }
 
+  /**
+   * 使用已解析的附件映射表下载附件
+   * @param {*} attachmentMap
+   */
   async function downloadByAttachmentMap(attachmentMap) {
     const normalized = {};
     for (const [type, byKey] of Object.entries(attachmentMap || {})) {
@@ -3002,6 +3454,11 @@
     return downloadByIdMap(normalized);
   }
 
+  /**
+   * 通过 subFileId 重命名附件
+   * @param {*} subFileId
+   * @param {*} attachmentName
+   */
   async function renameAttachmentById(subFileId, attachmentName) {
     const linkId = (location.pathname.match(/\/l\/([^/?#]+)/) || [])[1] || (window.fileInfo && window.fileInfo.link_id);
     if (!linkId) throw new Error("无法识别当前 WPS 链接 ID。");
@@ -3024,6 +3481,10 @@
     return text ? JSON.parse(text) : { result: "ok" };
   }
 
+  /**
+   * 将附件映射表的值规范化为统一的对象格式
+   * @param {*} attachmentMap
+   */
   function normalizeAttachmentMap(attachmentMap) {
     const normalized = { outer: {}, appointment: {}, flat: {} };
 
@@ -3041,6 +3502,10 @@
     return normalized;
   }
 
+  /**
+   * 使用已解析的附件映射表重命名附件
+   * @param {*} attachmentMap
+   */
   async function renameByAttachmentMap(attachmentMap) {
     const plan = await buildPlanDirectlyFromPage();
     const normalized = normalizeAttachmentMap(attachmentMap);
@@ -3083,6 +3548,9 @@
     return results;
   }
 
+  /**
+   * 获取执行表格命令所需的元数据
+   */
   function getSheetCommandMeta() {
     const sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
     const session = window.APP && window.APP.session;
@@ -3096,6 +3564,12 @@
     };
   }
 
+  /**
+   * 为计划项查找附件元数据
+   * @param {*} item
+   * @param {*} attachmentMap
+   * @param {*} id
+   */
   function findAttachmentMetaForItem(item, attachmentMap, id) {
     const diagnostic = (attachmentMap && attachmentMap._diagnostics || []).find(
       (entry) => entry.type === item.type && entry.key === item.key && (!id || entry.subFileId === id)
@@ -3108,6 +3582,10 @@
     return candidates.find((candidate) => candidate.id === id) || {};
   }
 
+  /**
+   * 深拷贝一个纯 JSON 可序列化的值
+   * @param {*} value
+   */
   function clonePlain(value) {
     if (value == null) return value;
     try {
@@ -3117,6 +3595,11 @@
     }
   }
 
+  /**
+   * 获取指定行列位置的 WPS 单元格对象
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   */
   function getCellObjectAt(rowIndex, colIndex) {
     const attempts = [
       () => window.APP && window.APP.getCell && window.APP.getCell(rowIndex, colIndex),
@@ -3139,6 +3622,13 @@
     return null;
   }
 
+  /**
+   * 根据行列边界创建 WPS 范围对象
+   * @param {*} rowFrom
+   * @param {*} rowTo
+   * @param {*} colFrom
+   * @param {*} colTo
+   */
   function createWpsRange(rowFrom, rowTo, colFrom, colTo) {
     const sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
     const tool = window.APP && window.APP.getUilCmdTool && window.APP.getUilCmdTool();
@@ -3157,6 +3647,11 @@
     return null;
   }
 
+  /**
+   * 通过 WPS UIL API 查询范围内的单元格值
+   * @param {*} range
+   * @param {*} options
+   */
   async function queryRangeValuesViaUil(range, options = {}) {
     const tool = window.APP && window.APP.getUilCmdTool && window.APP.getUilCmdTool();
     if (!tool || typeof tool.queryRangeValues !== "function" || !range) return null;
@@ -3181,6 +3676,12 @@
     });
   }
 
+  /**
+   * 从扫描结果中提取附件元数据
+   * @param {*} scan
+   * @param {*} item
+   * @param {*} matchName
+   */
   function metaFromScanResult(scan, item, matchName) {
     if (!scan || !scan.id) return null;
     return {
@@ -3198,6 +3699,10 @@
     };
   }
 
+  /**
+   * 通过查询单元格范围获取附件元数据
+   * @param {*} item
+   */
   async function getAttachmentMetaFromRangeQuery(item) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex = Number.isFinite(item.colIndex) ? item.colIndex : item.type === "outer" ? 2 : 6;
@@ -3225,6 +3730,9 @@
     return null;
   }
 
+  /**
+   * 以宽松方式检测并获取当前活动 Sheet 视图对象
+   */
   function getActiveSheetViewLoose() {
     const app = window.APP;
     const attempts = [
@@ -3244,6 +3752,9 @@
     return null;
   }
 
+  /**
+   * 收集与活动 Sheet 相关的对象，用于 API 探测
+   */
   function getActiveSheetRelatedObjects() {
     const app = window.APP;
     const sheet = app && app.getActiveSheet && app.getActiveSheet();
@@ -3266,6 +3777,9 @@
     return objects.filter((item) => item.value);
   }
 
+  /**
+   * 在活动 Sheet 上查找超链接提供对象
+   */
   function findHyperlinkProvider() {
     const methodNames = [
       "getHyperlink",
@@ -3290,6 +3804,10 @@
     return null;
   }
 
+  /**
+   * 使用超链接垫片执行回调
+   * @param {*} callback
+   */
   function withActiveSheetHyperlinkShim(callback) {
     const holder = window.APP && window.APP.getActiveSheet;
     if (!holder || typeof holder !== "function") return callback(null);
@@ -3320,6 +3838,9 @@
     }
   }
 
+  /**
+   * 收集可用的超链接方法名称
+   */
   function collectHyperlinkMethodSurface() {
     const rows = [];
     const methodPattern = /hyper|link|annex|attach|mention/i;
@@ -3336,6 +3857,9 @@
     return rows;
   }
 
+  /**
+   * 生成超链接方法表面的报告文本
+   */
   function makeHyperlinkMethodSurfaceReportText() {
     const rows = collectHyperlinkMethodSurface();
     const lines = [];
@@ -3370,6 +3894,9 @@
     return window.WPSBatch.lastHyperlinkMethodSurfaceReportText;
   }
 
+  /**
+   * 报告超链接方法表面，用于诊断
+   */
   async function reportHyperlinkMethodSurface() {
     const text = makeHyperlinkMethodSurfaceReportText();
     console.log(text);
@@ -3380,6 +3907,9 @@
     return text;
   }
 
+  /**
+   * 将超链接方法表面报告复制到剪贴板
+   */
   async function copyHyperlinkMethodSurfaceReport() {
     const text = window.WPSBatch.lastHyperlinkMethodSurfaceReportText || makeHyperlinkMethodSurfaceReportText();
     await navigator.clipboard.writeText(text);
@@ -3387,6 +3917,10 @@
     return text;
   }
 
+  /**
+   * 使用超链接提供方获取附件元数据
+   * @param {*} item
+   */
   async function getAttachmentMetaFromHyperlinkProviders(item) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex = Number.isFinite(item.colIndex) ? item.colIndex : item.type === "outer" ? 2 : 6;
@@ -3472,6 +4006,55 @@
     return null;
   }
 
+  /**
+   * 尝试多种 WPS API 选中指定单元格
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   * @param {*} options
+   */
+  /**
+   * 快速读取当前 WPS selection 快照（用于诊断对比）
+   */
+  function snapshotCurrentSelection() {
+    try {
+      const app = window.APP;
+      const view = getActiveSheetViewLoose();
+      const snap = {};
+
+      // 尝试 view.getSelectionRange()
+      try {
+        if (view && typeof view.getSelectionRange === "function") {
+          const rng = view.getSelectionRange();
+          if (rng) snap.view_getSelectionRange = extractRangeBoundsDeep(rng, 3);
+        }
+      } catch (_) {}
+
+      // 尝试 view.getSelection() -> windowInfo.selection
+      try {
+        if (view && typeof view.getSelection === "function") {
+          const sel = view.getSelection();
+          if (sel && sel.windowInfo && sel.windowInfo.selection && Array.isArray(sel.windowInfo.selection) && sel.windowInfo.selection.length) {
+            snap.view_getSelection_sel0 = extractRangeBoundsDeep(sel.windowInfo.selection[0], 3);
+          }
+          if (sel && sel.windowInfo && sel.windowInfo.activeCell) {
+            snap.view_getSelection_activeCell = extractRangeBoundsDeep(sel.windowInfo.activeCell, 3);
+          }
+        }
+      } catch (_) {}
+
+      // 尝试 view.selections.private.arr[0]
+      try {
+        if (view && view.selections && view.selections.private && view.selections.private.arr && view.selections.private.arr.length) {
+          snap.view_selections_arr0 = extractRangeBoundsDeep(view.selections.private.arr[0], 3);
+        }
+      } catch (_) {}
+
+      return snap;
+    } catch (_) {
+      return { error: "snapshotCurrentSelection 异常" };
+    }
+  }
+
   function selectWpsCell(rowIndex, colIndex, options = {}) {
     const app = window.APP;
     const sheet = app && app.getActiveSheet && app.getActiveSheet();
@@ -3486,6 +4069,14 @@
       row: rowIndex,
       col: colIndex,
     };
+
+    // ===== 诊断：记录目标坐标和 range 对象结构 =====
+    console.log("[selectWpsCell:START]", {
+      target: { rowIndex: rowIndex, colIndex: colIndex, address: colIndexToLetters(colIndex) + (rowIndex + 1) },
+      rangeExists: !!range,
+      rangeSummary: range ? summarizeObjectDeep(range, 2) : null,
+    });
+
     if (!options.allowMutation) {
       return {
         ok: false,
@@ -3498,38 +4089,82 @@
       };
     }
 
-    const attempts = [
-      ["tool.setSelection(range)", () => tool && tool.setSelection && tool.setSelection(range)],
-      ["tool.setSelectionRANGE(range)", () => tool && tool.setSelectionRANGE && tool.setSelectionRANGE(range)],
-      ["tool.selectCell(row,col)", () => tool && tool.selectCell && tool.selectCell(rowIndex, colIndex)],
-      ["app.setSelectionRANGE(range)", () => app && app.setSelectionRANGE && app.setSelectionRANGE(range)],
-      ["app.setSelectionRange(range)", () => app && app.setSelectionRange && app.setSelectionRange(range)],
-      ["view.setSelectionRANGE(range)", () => view && view.setSelectionRANGE && view.setSelectionRANGE(range)],
-      ["view.setSelectionRange(range)", () => view && view.setSelectionRange && view.setSelectionRange(range)],
-      ["view.setSelection(range)", () => view && view.setSelection && view.setSelection(range)],
-      ["view.setActiveCell(row,col)", () => view && view.setActiveCell && view.setActiveCell(rowIndex, colIndex)],
-      ["view.activateCell(row,col)", () => view && view.activateCell && view.activateCell(rowIndex, colIndex)],
-      ["sheet.setSelection(range)", () => sheet && sheet.setSelection && sheet.setSelection(range)],
-      ["sheet.setSelectionRANGE(range)", () => sheet && sheet.setSelectionRANGE && sheet.setSelectionRANGE(range)],
-      ["sheet.setActiveCell(row,col)", () => sheet && sheet.setActiveCell && sheet.setActiveCell(rowIndex, colIndex)],
-      ["tool.execute selectCell", () => tool && tool.execute && tool.execute("selectCell", selectionLike)],
-    ];
+    // ===== 诊断：记录变更前的 selection 快照 =====
+    var snapBefore = snapshotCurrentSelection();
+    console.log("[selectWpsCell:BEFORE] selection snapshot:", snapBefore);
 
     const results = [];
-    for (const [name, attempt] of attempts) {
+
+    // Phase 1: set the selection to a single-cell range covering the target.
+    // 注意：这里不再设置 activeCell。WPS 的单格选区本身就会隐含 activeCell 为
+    // 该格。单独再调用 setActiveCell 可能因为 range 格式 / 坐标体系 / 异步时序
+    // 等差异触发 "activeCell out of selection range!" 错误。
+    // 如果后续 WPS 确认需要显式 activeCell，也必须保证与 selection 完全一致的
+    // 坐标体系，并且只在确认 selection 已真实生效后再设置。
+    const selectionSetters = [
+      ["tool.setSelection(range)", () => tool && tool.setSelection && tool.setSelection(range)],
+      ["tool.setSelectionRANGE(range)", () => tool && tool.setSelectionRANGE && tool.setSelectionRANGE(range)],
+      ["sheet.setSelection(range)", () => sheet && sheet.setSelection && sheet.setSelection(range)],
+      ["view.setSelection(range)", () => view && view.setSelection && view.setSelection(range)],
+      ["view.setSelectionRANGE(range)", () => view && view.setSelectionRANGE && view.setSelectionRANGE(range)],
+      ["app.setSelectionRANGE(range)", () => app && app.setSelectionRANGE && app.setSelectionRANGE(range)],
+    ];
+    let selectionMethod = null;
+    for (const [name, setter] of selectionSetters) {
       try {
-        const result = attempt();
-        if (result !== undefined) results.push({ name, ok: true, result: summarizeObjectDeep(result, 2) });
-        else results.push({ name, ok: true, result: undefined });
-        return { ok: true, method: name, range, view, tool, selectionLike, results };
+        const r = setter();
+        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2) });
+        selectionMethod = name;
+        console.log("[selectWpsCell:SETTER_OK]", name, { result: summarizeObjectDeep(r, 2) });
+        break;
       } catch (error) {
-        results.push({ name, ok: false, error: String(error && error.message ? error.message : error).slice(0, 300) });
+        var errMsg = String(error && error.message ? error.message : error).slice(0, 300);
+        results.push({ name, ok: false, error: errMsg });
+        console.log("[selectWpsCell:SETTER_FAIL]", name, errMsg);
       }
     }
+    if (!selectionMethod) {
+      return { ok: false, range, view, tool, selectionLike, results, error: "所有 setSelection 方法都失败" };
+    }
 
-    return { ok: false, range, view, tool, selectionLike, results };
+    // ===== 诊断：变更后立刻读取 selection 快照，验证是否确实生效 =====
+    var snapAfter = snapshotCurrentSelection();
+    console.log("[selectWpsCell:AFTER]  selection snapshot:", snapAfter);
+    console.log("[selectWpsCell:VERIFY]", {
+      method: selectionMethod,
+      target: { rowIndex: rowIndex, colIndex: colIndex },
+      before: snapBefore,
+      after: snapAfter,
+    });
+
+    // Phase 2 (activeCell) 已移除：
+    // 之前的 view.setActiveCell / view.activateCell / sheet.setActiveCell 调用
+    // 在某些 WPS 版本下会触发 "activeCell out of selection range!" 错误。
+    // 原因可能是：(a) range 内部结构与 WPS 预期不完全一致，导致 selection
+    // 实际未更新；(b) selection 更新异步但 activeCell 设置同步执行；
+    // (c) activeCell setter 使用了与 selection 不同的坐标校验路径。
+    //
+    // 当前方案：仅设置单格选区，WPS 会自行将 activeCell 指向该格。
+    // selection alone is enough for our scroll logic.
+
+    return {
+      ok: true,
+      method: selectionMethod + " (selection-only, no activeCell)",
+      range,
+      view,
+      tool,
+      selectionLike,
+      results,
+      // 附加诊断快照，供调用方（如 jumpToCell）使用
+      _diag: { snapBefore: snapBefore, snapAfter: snapAfter },
+    };
   }
 
+  /**
+   * 判断元数据是否可能属于某个计划项
+   * @param {*} meta
+   * @param {*} item
+   */
   function isMetaLikelyForPlanItem(meta, item) {
     if (!meta || !meta.id) return false;
     const haystack = normalizeAttachmentDisplayName(
@@ -3541,6 +4176,12 @@
     return aliases.some((alias) => alias && (haystack.includes(alias) || alias.includes(haystack)));
   }
 
+  /**
+   * 根据计划项可能性过滤扫描结果并获取元数据
+   * @param {*} scan
+   * @param {*} item
+   * @param {*} matchName
+   */
   function metaFromSelectedScan(scan, item, matchName) {
     const meta = metaFromScanResult(scan, item, matchName);
     if (!meta) return null;
@@ -3548,6 +4189,11 @@
     return isMetaLikelyForPlanItem(meta, item) ? meta : null;
   }
 
+  /**
+   * 调用可能返回 Promise 或使用回调的函数
+   * @param {*} fn
+   * @param {*} timeoutMs
+   */
   function callMaybePromise(fn, timeoutMs = 1500) {
     return new Promise((resolve) => {
       let settled = false;
@@ -3569,6 +4215,13 @@
     });
   }
 
+  /**
+   * 为选中单元格尝试调用超链接方法
+   * @param {*} target
+   * @param {*} methodName
+   * @param {*} item
+   * @param {*} context
+   */
   async function trySelectedHyperlinkMethod(target, methodName, item, context) {
     if (!target || typeof target[methodName] !== "function") return null;
 
@@ -3607,6 +4260,11 @@
     return null;
   }
 
+  /**
+   * 从选中的超链接 API 获取附件元数据
+   * @param {*} item
+   * @param {*} options
+   */
   async function getAttachmentMetaFromSelectedHyperlink(item, options = {}) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex = Number.isFinite(item.colIndex) ? item.colIndex : item.type === "outer" ? 2 : 6;
@@ -3668,6 +4326,10 @@
     return null;
   }
 
+  /**
+   * 列出对象上可调用的方法
+   * @param {*} obj
+   */
   function listObjectMethods(obj) {
     const rows = [];
     const seen = new Set();
@@ -3698,6 +4360,10 @@
     return rows;
   }
 
+  /**
+   * 通过 DOM 和 API 检查单个附件单元格
+   * @param {*} item
+   */
   function inspectAttachmentCell(item) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex = Number.isFinite(item.colIndex) ? item.colIndex : item.type === "outer" ? 2 : 6;
@@ -3749,6 +4415,10 @@
     };
   }
 
+  /**
+   * 对附件单元格进行丰富的检查，包括超链接探测
+   * @param {*} item
+   */
   async function inspectAttachmentCellRich(item) {
     const base = inspectAttachmentCell(item);
     const rowIndex = base.rowIndex;
@@ -3774,6 +4444,11 @@
     return { ...base, rangeQueries };
   }
 
+  /**
+   * 针对特定计划项检查选中的超链接
+   * @param {*} item
+   * @param {*} options
+   */
   async function inspectSelectedHyperlinkForItem(item, options = {}) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex = Number.isFinite(item.colIndex) ? item.colIndex : item.type === "outer" ? 2 : 6;
@@ -3860,6 +4535,11 @@
     };
   }
 
+  /**
+   * 报告选中超链接 API，用于诊断
+   * @param {*} limit
+   * @param {*} options
+   */
   async function reportSelectedHyperlinkApis(limit = 4, options = {}) {
     const plan = (await buildPlanDirectlyFromPage()).slice(0, limit);
     const inspections = [];
@@ -3920,6 +4600,11 @@
     return inspections;
   }
 
+  /**
+   * 获取指定单元格的现有运行段（runs）
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   */
   function getExistingCellRuns(rowIndex, colIndex) {
     const cell = getCellObjectAt(rowIndex, colIndex);
     if (!cell) return [];
@@ -3957,6 +4642,10 @@
     return [];
   }
 
+  /**
+   * 直接从单元格对象获取附件元数据
+   * @param {*} item
+   */
   function getAttachmentMetaFromCell(item) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex = Number.isFinite(item.colIndex) ? item.colIndex : item.type === "outer" ? 2 : 6;
@@ -3966,6 +4655,11 @@
     return metaFromScanResult(scanObjectForAttachmentMeta(cell), item, "cell-link");
   }
 
+  /**
+   * 使用多种策略获取计划项的附件元数据
+   * @param {*} item
+   * @param {*} options
+   */
   async function getAttachmentMetaForPlanItem(item, options = {}) {
     return (
       (await getAttachmentMetaFromHyperlinkProviders(item)) ||
@@ -3975,6 +4669,12 @@
     );
   }
 
+  /**
+   * 构建更新附件单元格所需的命令参数
+   * @param {*} item
+   * @param {*} id
+   * @param {*} meta
+   */
   function makeAttachmentCellCommandParam(item, id, meta) {
     const rowIndex = Number.isFinite(item.rowIndex) ? item.rowIndex : Number(item.row) - 1;
     const colIndex =
@@ -4033,6 +4733,10 @@
     return param;
   }
 
+  /**
+   * 根据附件映射表更新表格单元格以显示附件
+   * @param {*} attachmentMap
+   */
   async function updateSheetAttachmentCellsByAttachmentMap(attachmentMap) {
     const plan = await buildPlanDirectlyFromPage();
     const normalized = normalizeAttachmentMap(attachmentMap);
@@ -4078,6 +4782,9 @@
     return results;
   }
 
+  /**
+   * 使用自动发现的数据更新表格附件单元格
+   */
   async function updateSheetAttachmentCellsAuto() {
     const attachmentMap = window.WPSBatch.lastAutoAttachmentMap || loadPersistedAttachmentMap() || (await makeAutoAttachmentMap());
     const missing = (attachmentMap._diagnostics || []).filter((item) => item.status === "missing-id");
@@ -4095,6 +4802,10 @@
     return updateSheetAttachmentCellsByAttachmentMap(attachmentMap);
   }
 
+  /**
+   * 使用已解析的附件映射表重命名并下载
+   * @param {*} attachmentMap
+   */
   async function renameAndDownloadByAttachmentMap(attachmentMap) {
     log("先批量重命名 WPS 表格内附件显示名。");
     const renameResults = await renameByAttachmentMap(attachmentMap);
@@ -4103,6 +4814,9 @@
     return { renameResults, downloadResults };
   }
 
+  /**
+   * 创建供用户编辑的附件映射表模板
+   */
   async function makeAttachmentMapTemplate() {
     const plan = await buildPlanDirectlyFromPage();
     const template = { outer: {}, appointment: {} };
@@ -4121,6 +4835,10 @@
     return template;
   }
 
+  /**
+   * 根据发现的候选自动构建附件映射表
+   * @param {*} options
+   */
   async function makeAutoAttachmentMap(options = {}) {
     const plan = await buildPlanDirectlyFromPage();
     const { scanned, candidates, endpointResults } = await collectAttachmentIdCandidatesAsync();
@@ -4209,6 +4927,10 @@
     return attachmentMap;
   }
 
+  /**
+   * 使用自动发现的数据执行重命名和下载
+   * @param {*} options
+   */
   async function renameAndDownloadAuto(options = {}) {
     const attachmentMap = await makeAutoAttachmentMap(options);
     var matchResult = buildMatchResult(attachmentMap);
@@ -4226,6 +4948,9 @@
     return { cellResults: cellResults, renameResults: renameDownloadResults.renameResults, downloadResults: renameDownloadResults.downloadResults };
   }
 
+  /**
+   * 安装钩子以捕获重命名请求
+   */
   async function installRenameProbeHooks() {
     const probe = installProbeHooks();
     probe.reset();
@@ -4234,6 +4959,11 @@
     return probe;
   }
 
+  /**
+   * 使用捕获的请求数据执行重命名
+   * @param {*} renameConfig
+   * @param {*} attachmentMap
+   */
   async function renameByCapturedRequest(renameConfig, attachmentMap) {
     if (!renameConfig || typeof renameConfig !== "object") {
       throw new Error("缺少 renameConfig。需要先通过 installRenameProbeHooks 捕获 WPS 的重命名接口。");
@@ -4305,6 +5035,9 @@
     return results;
   }
 
+  /**
+   * 在 WPS 方法上安装网络和 API 探针钩子
+   */
   function installProbeHooks() {
     const existing = window.WPSBatch && window.WPSBatch.probe;
     if (existing && existing.installed) {
@@ -4326,10 +5059,18 @@
     };
     restorePersistedProbeInto(probe);
 
+    /**
+     * 判断是否应该记录 URL
+     * @param {*} url
+     */
     function shouldRecordUrl(url) {
       return /(kdocs|wps|docer|qing|kso|kingsoft|wpscdn|file|download|attach|upload|office|weboffice)/i.test(String(url || ""));
     }
 
+    /**
+     * 规范化请求体
+     * @param {*} body
+     */
     function normalizeBody(body) {
       if (!body) return "";
       if (typeof body === "string") return body.slice(0, 1200);
@@ -4443,6 +5184,10 @@
       return probe.originalOpen.apply(this, arguments);
     };
 
+    /**
+     * 摘要化参数列表
+     * @param {*} args
+     */
     function summarizeArgs(args) {
       try {
         return JSON.stringify(Array.from(args).map((item) => summarizeObjectDeep(item, 2))).slice(0, 3000);
@@ -4454,6 +5199,12 @@
       }
     }
 
+    /**
+     * 补丁方法以拦截调用
+     * @param {*} objectName
+     * @param {*} object
+     * @param {*} methodName
+     */
     function patchMethod(objectName, object, methodName) {
       if (!object || typeof object[methodName] !== "function") return;
       const original = object[methodName];
@@ -4549,6 +5300,9 @@
     return probe;
   }
 
+  /**
+   * 检查当前页面环境，判断 KDocs 和 WPS 是否可用
+   */
   function checkPageEnvironment() {
     var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
     var result = {
@@ -4579,6 +5333,9 @@
     return result;
   }
 
+  /**
+   * 运行自检以验证基本功能
+   */
   async function selfTest() {
     var result = checkPageEnvironment();
     console.log("[WPSBatch] Self Test Result:");
@@ -4587,6 +5344,10 @@
     return result;
   }
 
+  /**
+   * 主入口：一键执行扫描、匹配和执行流程
+   * @param {*} options
+   */
   async function run(options = {}) {
     let plan = [];
     let candidates = [];
@@ -4650,6 +5411,9 @@
     }
   }
 
+  /**
+   * 将当前报告复制到剪贴板
+   */
   async function copyReport() {
     if (!window.WPSBatch.lastReportText) {
       throw new Error("还没有报告。请先运行 await WPSBatch.run()");
@@ -4658,6 +5422,10 @@
     log("已复制 WPSBatch.lastReportText。");
   }
 
+  /**
+   * 根据附件映射表构建匹配结果
+   * @param {*} attachmentMap
+   */
   function buildMatchResult(attachmentMap) {
     var diagnostics = attachmentMap._diagnostics || [];
     var missingItems = [];
@@ -4688,6 +5456,11 @@
 
   // ===== Selection-based Attachment APIs =====
 
+  /**
+   * 使用多个键名从对象中获取数字字段
+   * @param {*} obj
+   * @param {*} names
+   */
   function getFieldNumber(obj, names) {
     if (!obj || typeof obj !== "object") return NaN;
     for (var i = 0; i < names.length; i++) {
@@ -4702,6 +5475,12 @@
     return NaN;
   }
 
+  /**
+   * 通过深度扫描从原始值中提取范围边界
+   * @param {*} raw
+   * @param {*} depth
+   * @param {*} seen
+   */
   function extractRangeBoundsDeep(raw, depth, seen) {
     if (!raw || (typeof raw !== "object" && typeof raw !== "function")) return null;
     if (raw instanceof Node || raw === window || raw === document) return null;
@@ -4773,6 +5552,9 @@
     return null;
   }
 
+  /**
+   * 通过表面扫描查找当前选中的范围
+   */
   function findSelectedRangeBySurfaceScan() {
     var app = window.APP;
     var sheet = app && app.getActiveSheet && app.getActiveSheet();
@@ -4835,6 +5617,10 @@
 
   // ===== A1 Notation Range Parser =====
 
+  /**
+   * 将 Excel 列字母转换为零基索引
+   * @param {*} letters
+   */
   function columnLettersToIndex(letters) {
     var s = String(letters || "").toUpperCase().replace(/[^A-Z]/g, "");
     if (!s) return -1;
@@ -4845,6 +5631,10 @@
     return result - 1; // 0-based
   }
 
+  /**
+   * 解析 A1 风格的单元格引用字符串
+   * @param {*} ref
+   */
   function parseA1CellRef(ref) {
     var text = String(ref || "").trim().toUpperCase();
     var match = text.match(/^([A-Z]+)(\d+)$/);
@@ -4855,6 +5645,10 @@
     return { rowIndex: rowIndex, colIndex: colIndex };
   }
 
+  /**
+   * 解析 A1 风格的范围字符串为边界值
+   * @param {*} rangeText
+   */
   function parseA1Range(rangeText) {
     var text = String(rangeText || "").trim().toUpperCase();
     if (!text) return null;
@@ -4886,6 +5680,10 @@
     };
   }
 
+  /**
+   * 解析可能包含多个范围的 A1 选择字符串
+   * @param {*} selectionText
+   */
   function parseA1Selection(selectionText) {
     var text = String(selectionText || "").trim();
     if (!text) return { ok: false, error: "空范围" };
@@ -4963,6 +5761,9 @@
 
   // ===== Selection Diagnosis API =====
 
+  /**
+   * 诊断可用的选区 API 及其结果
+   */
   function diagnoseSelectionApis() {
     var started = Date.now();
     var result = {
@@ -5210,6 +6011,10 @@
 
   // ===== Deep Attachment ID Search (diagnostic only) =====
 
+  /**
+   * 在值内部深度查找附件 ID
+   * @param {*} value
+   */
   function findAttachmentIdsDeep(value) {
     var result = {
       ids: [],
@@ -5343,6 +6148,10 @@
 
   // ===== Selected Attachment Cell Deep Diagnosis =====
 
+  /**
+   * 全面诊断选中的附件单元格
+   * @param {*} options
+   */
   async function diagnoseSelectedAttachmentCells(options) {
     options = options || {};
     var started = Date.now();
@@ -5628,6 +6437,10 @@
     return result;
   }
 
+  /**
+   * 获取 WPS 表格中当前选中的范围
+   * @param {*} options
+   */
   function getSelectedRange(options) {
     options = options || {};
 
@@ -5784,6 +6597,11 @@
       }],
     ];
 
+    /**
+     * 标记选中范围为正常
+     * @param {*} range
+     * @param {*} method
+     */
     function markSelectedRangeOk(range, method) {
       if (!range) return range;
       range.ok = true;
@@ -5856,6 +6674,10 @@
     };
   }
 
+  /**
+   * 从类范围对象中提取数字边界
+   * @param {*} raw
+   */
   function extractRangeBounds(raw) {
     if (!raw || typeof raw !== "object") return null;
     var bounds = {
@@ -5972,6 +6794,11 @@
 
   // ===== Enhanced Attachment Detection =====
 
+  /**
+   * 在指定单元格检测附件元数据
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   */
   async function detectAttachmentMetaAtCell(rowIndex, colIndex) {
     var result = {
       rowIndex: rowIndex,
@@ -6171,6 +6998,10 @@
 
   // ===== Plan-Attachment-Map fallback for ID resolution =====
 
+  /**
+   * 规范化单元格文本用于模糊匹配
+   * @param {*} text
+   */
   function normalizeCellTextForMatching(text) {
     return normalizeAttachmentDisplayName(text)
       .replace(/^📄/u, "")
@@ -6179,6 +7010,9 @@
       .toLowerCase();
   }
 
+  /**
+   * 构建用于解析附件的上下文对象
+   */
   function buildResolveContext() {
     return {
       plan: null,
@@ -6189,6 +7023,10 @@
     };
   }
 
+  /**
+   * 确保解析上下文已填充表格数据
+   * @param {*} ctx
+   */
   async function ensureResolveContext(ctx) {
     if (!ctx._planLoaded) {
       try {
@@ -6228,6 +7066,13 @@
     return ctx;
   }
 
+  /**
+   * 通过计划匹配为选中单元格解析附件
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   * @param {*} cellText
+   * @param {*} ctx
+   */
   function resolveSelectedCellAttachmentByPlan(rowIndex, colIndex, cellText, ctx) {
     if (!ctx || !ctx.plan || !ctx.plan.length) {
       return { ok: false, reason: "no-plan" };
@@ -6284,6 +7129,12 @@
     return { ok: false, reason: "no-plan-item-matched" };
   }
 
+  /**
+   * 根据上下文从计划项解析附件
+   * @param {*} item
+   * @param {*} ctx
+   * @param {*} matchSource
+   */
   function resolveFromPlanItem(item, ctx, matchSource) {
     var map = ctx.attachmentMap;
     if (!map) return { ok: false, reason: "no-attachment-map" };
@@ -6312,6 +7163,10 @@
 
   // ===== Main Cell Inspection (sync best-effort) =====
 
+  /**
+   * 检查选中的附件单元格并返回元数据
+   * @param {*} options
+   */
   function inspectSelectedAttachmentCells(options) {
     options = options || {};
     var rangeResult = getSelectedRange(options);
@@ -6539,6 +7394,10 @@
   }
 
   // Async variant: re-checks cells via range-query
+  /**
+   * 异步包装：检查选中的附件单元格
+   * @param {*} options
+   */
   async function inspectSelectedAttachmentCellsAsync(options) {
     var result = inspectSelectedAttachmentCells(options);
     if (!result.ok) return result;
@@ -6751,6 +7610,10 @@
 
   // ===== Template-based Rename Helpers =====
 
+  /**
+   * 将列索引转换为 Excel 列字母
+   * @param {*} colIndex
+   */
   function colIndexToLetters(colIndex) {
     var letters = '';
     var n = colIndex;
@@ -6761,12 +7624,20 @@
     return letters;
   }
 
+  /**
+   * 从上次扫描结果中获取列数据
+   */
   function getColumnsFromLastScan() {
     var kernel = window.WPSBatch && window.WPSBatch.kernel;
     var sr = kernel && kernel.getLastScanResult();
     return (sr && sr.columns) || [];
   }
 
+  /**
+   * 解析重命名模板字符串为分段
+   * @param {*} template
+   * @param {*} columns
+   */
   function parseRenameTemplate(template, columns) {
     if (!template || typeof template !== "string" || !template.trim()) {
       return { ok: false, error: "模板为空" };
@@ -6824,6 +7695,10 @@
     return { ok: true, parts: parts, referencedColumns: referencedColumns };
   }
 
+  /**
+   * 解析日期值
+   * @param {*} value
+   */
   function parseDateValue(value) {
     if (!value) return null;
     var text = (typeof value === 'string' ? value : String(value)).trim();
@@ -6883,6 +7758,11 @@
     return null;
   }
 
+  /**
+   * 格式化日期值
+   * @param {*} value
+   * @param {*} format
+   */
   function formatDateValue(value, format) {
     if (!format) return value;
     var date = parseDateValue(value);
@@ -6902,6 +7782,12 @@
     return result;
   }
 
+  /**
+   * 获取重命名单元格的文本内容
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   * @param {*} columns
+   */
   function getRenameCellText(rowIndex, colIndex, columns) {
     // Try direct cell read first
     var value = getWpsCellText(rowIndex, colIndex);
@@ -6939,6 +7825,12 @@
     return '';
   }
 
+  /**
+   * 为指定行渲染重命名模板
+   * @param {*} template
+   * @param {*} rowIndex
+   * @param {*} columns
+   */
   function renderRenameTemplateForRow(template, rowIndex, columns) {
     var parseResult = parseRenameTemplate(template, columns);
     if (!parseResult.ok) return parseResult;
@@ -6966,6 +7858,11 @@
     return { ok: true, result: result, missingColumns: missingColumns };
   }
 
+  /**
+   * 根据选中的列索引构建重命名模板
+   * @param {*} selectedColumnIndexes
+   * @param {*} columns
+   */
   function buildTemplateFromSelectedColumns(selectedColumnIndexes, columns) {
     if (!selectedColumnIndexes.length) return "";
     var indexMap = {};
@@ -6980,6 +7877,10 @@
     return names.join("-");
   }
 
+  /**
+   * 使用模板规则预览选中附件的重命名
+   * @param {*} rule
+   */
   async function previewRenameSelectedAttachments(rule) {
     var ruleObj = rule || {};
     var template = ruleObj.template || "";
@@ -7172,6 +8073,10 @@
     };
   }
 
+  /**
+   * 执行选中附件单元格的重命名
+   * @param {*} rule
+   */
   async function renameSelectedAttachmentCells(rule) {
     var ruleObj = rule || {};
 
@@ -7317,6 +8222,11 @@
 
   // Probes WPS APIs to determine if (rowIndex, colIndex) belongs to a merged cell.
   // Returns { isMerged, isMaster, masterRow, masterCol, rowSpan, colSpan } or null.
+  /**
+   * 检测指定单元格的合并信息
+   * @param {*} rowIndex
+   * @param {*} colIndex
+   */
   function detectCellMergeInfo(rowIndex, colIndex) {
     // 1) Cell object merge properties
     try {
@@ -7447,6 +8357,11 @@
   // Classify a non-attachment cell entry to determine whether it should block the download flow.
   // Returns 'blocker' for cells that should prevent download,
   //         'ignorable' for merge-slave / blank cells that can be safely skipped.
+  /**
+   * 将非附件单元格分类为阻断项或可忽略项
+   * @param {*} entry
+   * @param {*} inspectResult
+   */
   function classifyNonAttachmentCell(entry, inspectResult) {
     if (!entry || entry.isAttachment) return null;
 
@@ -7475,6 +8390,10 @@
 
   // Filter non-attachment cells in inspectResult.
   // Returns { ignorableCount, blockerCount, blockerSamples }.
+  /**
+   * 过滤掉非附件单元格中的可忽略项，保留阻断项
+   * @param {*} inspectResult
+   */
   function filterNonAttachmentCells(inspectResult) {
     var ignorableCount = 0;
     var blockerCount = 0;
@@ -7500,6 +8419,10 @@
 
   // ===== Selected Attachment Download Preparation =====
 
+  /**
+   * 为选中的附件单元格准备下载元数据
+   * @param {*} options
+   */
   async function prepareSelectedAttachmentDownloads(options) {
     options = options || {};
     var rangeOverride = options.rangeOverride || "";
@@ -7622,6 +8545,9 @@
     };
   }
 
+  /**
+   * 创建包含全部 API 方法的 WPSBatch 内核
+   */
   function createWpsBatchKernel() {
     var lastScanResult = null;
     var lastMatchResult = null;
@@ -7629,6 +8555,10 @@
 
     var kernel = {};
 
+    /**
+     * 扫描表格数据，构建任务计划并缓存扫描结果
+     * @param {*} options
+     */
     kernel.scan = async function (options) {
       options = options || {};
       var plan = await buildPlanDirectlyFromPage();
@@ -7678,6 +8608,10 @@
       return lastScanResult;
     };
 
+    /**
+     * 预览当前扫描结果的任务列表和状态
+     * @param {*} options
+     */
     kernel.preview = async function (options) {
       options = options || {};
       var scanResult = lastScanResult;
@@ -7708,6 +8642,10 @@
       return { items: items, summary: summary, scanSource: scanResult.source, timestamp: Date.now() };
     };
 
+    /**
+     * 将计划项与附件候选进行匹配，返回匹配结果
+     * @param {*} options
+     */
     kernel.matchAttachments = async function (options) {
       options = options || {};
       var attachmentMap;
@@ -7726,6 +8664,10 @@
       return lastMatchResult;
     };
 
+    /**
+     * 执行扫描-匹配-下载/重命名完整流程
+     * @param {*} options
+     */
     kernel.execute = async function (options) {
       options = options || {};
       if (!lastMatchResult) {
@@ -7858,6 +8800,10 @@
       return lastExecuteResult;
     };
 
+    /**
+     * 生成并返回执行报告
+     * @param {*} options
+     */
     kernel.report = function (options) {
       options = options || {};
       var sections = [];
@@ -7917,14 +8863,26 @@
       };
     };
 
+    /**
+     * 重置内核状态，清空缓存的扫描、匹配和执行结果
+     */
     kernel.reset = function () {
       lastScanResult = null;
       lastMatchResult = null;
       lastExecuteResult = null;
     };
 
+    /**
+     * 获取上次扫描的结果
+     */
     kernel.getLastScanResult = function () { return lastScanResult; };
+    /**
+     * 获取上次匹配的结果
+     */
     kernel.getLastMatchResult = function () { return lastMatchResult; };
+    /**
+     * 获取上次执行的结果
+     */
     kernel.getLastExecuteResult = function () { return lastExecuteResult; };
 
     kernel.getSelectedRange = getSelectedRange;
@@ -7935,6 +8893,10 @@
     kernel.diagnoseSelectedAttachmentCells = diagnoseSelectedAttachmentCells;
     kernel.prepareSelectedAttachmentDownloads = prepareSelectedAttachmentDownloads;
 
+    /**
+     * 在所有列中搜索给定关键词的单元格
+     * @param {*} options
+     */
     kernel.batchSearchCells = function (options) {
       options = options || {};
       var keywords = options.keywords || [];
@@ -7990,13 +8952,157 @@
       };
     };
 
+    // Get a cell's pixel rect from the WPS API. Tries several method names; the kdocs
+    // engine has changed method names across versions, so be defensive. Returns
+    // { top, left, width, height, method } or null if nothing worked.
+    /**
+     * 通过 WPS 视图/表格 API 获取单元格像素矩形
+     * @param {*} rowIndex
+     * @param {*} colIndex
+     * @param {*} view
+     * @param {*} sheet
+     */
+    function getCellPixelRect(rowIndex, colIndex, view, sheet) {
+      var candidates = [
+        function () { return view && view.getCellRect && view.getCellRect(rowIndex, colIndex); },
+        function () { return view && view.getCellPosition && view.getCellPosition(rowIndex, colIndex); },
+        function () { return view && view.getCellRectByRC && view.getCellRectByRC(rowIndex, colIndex); },
+        function () { return view && view.getCellInfo && view.getCellInfo(rowIndex, colIndex); },
+        function () { return sheet && sheet.getCellRect && sheet.getCellRect(rowIndex, colIndex); },
+        function () { return sheet && sheet.getCellPosition && sheet.getCellPosition(rowIndex, colIndex); },
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        try {
+          var r = candidates[i]();
+          if (r && (typeof r.top === "number" || typeof r.left === "number" || typeof r.x === "number" || typeof r.y === "number")) {
+            return {
+              top: typeof r.top === "number" ? r.top : (typeof r.y === "number" ? r.y : 0),
+              left: typeof r.left === "number" ? r.left : (typeof r.x === "number" ? r.x : 0),
+              width: r.width || r.w || 80,
+              height: r.height || r.h || 22,
+              method: candidates[i].toString().slice(0, 200),
+            };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    // Find the WPS table's scrollable container. WPS draws the sheet onto a <canvas>
+    // wrapped in one or more divs with overflow:auto. Walk up from the canvas until we
+    // find a scrollable ancestor whose scrollHeight > clientHeight.
+    /**
+     * 从 canvas 向上遍历 DOM 找到可滚动容器
+     */
+    function findCanvasScrollContainer() {
+      var canvas = document.querySelector("canvas");
+      if (!canvas) return null;
+      var el = canvas.parentElement;
+      while (el && el !== document.body) {
+        var style = window.getComputedStyle(el);
+        var overflowY = (style.overflowY || "").toLowerCase();
+        var overflowX = (style.overflowX || "").toLowerCase();
+        if ((overflowY === "auto" || overflowY === "scroll" || overflowX === "auto" || overflowX === "scroll")
+            && el.scrollHeight > el.clientHeight) {
+          return { container: el, canvas: canvas };
+        }
+        el = el.parentElement;
+      }
+      // Fallback: just the canvas's first ancestor with overflow set at all
+      el = canvas.parentElement;
+      while (el && el !== document.body) {
+        var s2 = window.getComputedStyle(el);
+        if ((s2.overflowY || "").match(/auto|scroll/) || (s2.overflowX || "").match(/auto|scroll/)) {
+          return { container: el, canvas: canvas };
+        }
+        el = el.parentElement;
+      }
+      return null;
+    }
+
+    // Briefly show a 2s highlight ring at the cell's position by overlaying a div
+    // on top of the canvas.
+    // Returns the overlay element so callers can clean up.
+    /**
+     * 在单元格像素坐标上显示一个 2.2 秒的高亮覆盖层
+     * @param {*} rect
+     * @param {*} container
+     */
+    function flashCellOverlay(rect, container) {
+      if (!rect) return null;
+      var overlay = document.createElement("div");
+      overlay.className = "wps-batch-cell-highlight";
+      overlay.style.position = "absolute";
+      overlay.style.pointerEvents = "none";
+      overlay.style.left = (rect.left) + "px";
+      overlay.style.top = (rect.top) + "px";
+      overlay.style.width = rect.width + "px";
+      overlay.style.height = rect.height + "px";
+      overlay.style.zIndex = "99999";
+      // Place inside the scroll container so the highlight follows the cell as user scrolls
+      var parent = container || document.body;
+      if (parent !== document.body && getComputedStyle(parent).position === "static") {
+        parent.style.position = "relative";
+      }
+      parent.appendChild(overlay);
+      setTimeout(function () {
+        try { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); } catch (_) {}
+      }, 2200);
+      return overlay;
+    }
+
+    // Smoothly scroll a cell into the viewport for canvas-rendered WPS tables.
+    // Strategy: get the cell's pixel rect from the WPS API, then scroll the canvas's
+    // scrollable container so the rect is in view. Falls back to estimated position
+    // (row * default height) if no WPS API method works.
+    /**
+     * 将单元格平滑滚动到视口并闪烁高亮
+     * @param {*} rowIndex
+     * @param {*} colIndex
+     * @param {*} view
+     * @param {*} sheet
+     */
+    function scrollCellIntoView(rowIndex, colIndex, view, sheet) {
+      var rect = getCellPixelRect(rowIndex, colIndex, view, sheet);
+      var scroller = findCanvasScrollContainer();
+      if (!scroller) {
+        return { ok: false, error: "未找到 canvas 滚动容器" };
+      }
+      if (!rect) {
+        // Estimate: default WPS row height ~22px, plus a header offset of ~30px.
+        var defaultRowHeight = 22;
+        var headerOffset = 30;
+        rect = {
+          top: headerOffset + rowIndex * defaultRowHeight,
+          left: 40 + colIndex * 80,
+          width: 80,
+          height: defaultRowHeight,
+          method: "estimated",
+        };
+      }
+      var targetTop = Math.max(0, rect.top - 100);
+      try {
+        scroller.container.scrollTo({ top: targetTop, behavior: "smooth" });
+      } catch (_) {
+        // Older browsers
+        scroller.container.scrollTop = targetTop;
+      }
+      flashCellOverlay(rect, scroller.container);
+      return { ok: true, method: rect.method || "unknown", top: rect.top };
+    }
+
+    /**
+     * 按地址或行列索引跳转到指定单元格，选中、滚动到视口并高亮
+     * @param {*} options
+     */
     kernel.jumpToCell = function (options) {
       options = options || {};
+      console.log("[jumpToCell:START] options", options);
       var rowIndex = options.rowIndex;
       var colIndex = options.colIndex;
       var address = options.address;
 
-      // If address provided, parse it as the authoritative source
+      // If address provided, parse it as the authoritative source 如果提供了地址，则将其解析为权威来源
       if (address) {
         var addrMatch = String(address).trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
         if (addrMatch) {
@@ -8016,11 +9122,30 @@
       if (!address) {
         address = colIndexToLetters(colIndex) + (rowIndex + 1);
       }
+
+      console.log("[jumpToCell:RESOLVED] address=" + address + " rowIndex=" + rowIndex + " colIndex=" + colIndex);
+
+      // Phase 1: 仅设置单格选区（不设置 activeCell，避免 WPS 内部
+      // "activeCell out of selection range!" 校验错误）
       var selResult = selectWpsCell(rowIndex, colIndex, { allowMutation: true });
+      console.log("[jumpToCell:SELECTION] ok=" + selResult.ok + " method=" + selResult.method + " results=" + (selResult.results ? selResult.results.length + " attempts" : "n/a"));
+
       if (!selResult.ok) {
         return { ok: false, error: '无法选中单元格 ' + address, method: selResult.method, results: selResult.results };
       }
-      return { ok: true, method: selResult.method, address: address };
+
+      // Phase 2: 滚动到视口（不依赖 activeCell，仅使用 selection 结果）
+      var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
+      var scrollResult = scrollCellIntoView(rowIndex, colIndex, selResult.view, sheet);
+      console.log("[jumpToCell:SCROLL] ok=" + scrollResult.ok + " method=" + (scrollResult.method || "n/a"));
+
+      return {
+        ok: true,
+        method: selResult.method,
+        address: address,
+        scroll: scrollResult,
+        _diag: selResult._diag || null,
+      };
     };
 
     return kernel;
@@ -8048,7 +9173,10 @@
     diagnoseSelectedAttachmentCells: function (options) { return wpsBatchKernel.diagnoseSelectedAttachmentCells(options); },
     prepareSelectedAttachmentDownloads: function (options) { return wpsBatchKernel.prepareSelectedAttachmentDownloads(options); },
     batchSearchCells: function (options) { return wpsBatchKernel.batchSearchCells(options); },
-    jumpToCell: function (options) { return wpsBatchKernel.jumpToCell(options); },
+    jumpToCell: function (options) {
+      console.log("jumpToCell options", options)
+      return wpsBatchKernel.jumpToCell(options);
+    },
     // Legacy API — preserved for backward compatibility
     run,
     buildPlanFromTsv,
