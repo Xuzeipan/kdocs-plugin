@@ -784,7 +784,7 @@
   }
 
   async function doOpenRenamePanel() {
-    hideError(); hideInfo();
+    switchFeaturePanel('rename');
     renameSection.classList.remove('hidden');
 
     if (!state.columns.length) {
@@ -1036,7 +1036,7 @@
   }
 
   async function doOpenDownloadPanel() {
-    hideError(); hideInfo();
+    switchFeaturePanel('download');
     downloadSection.classList.remove('hidden');
 
     if (!state.bridgeReady) {
@@ -1235,8 +1235,25 @@
     searchStatusBar.textContent = '';
   }
 
-  async function doOpenSearchPanel() {
+  function switchFeaturePanel(activeKind) {
     hideError(); hideInfo();
+
+    if (activeKind !== 'rename') {
+      renameSection.classList.add('hidden');
+      resetRenameFlow();
+    }
+    if (activeKind !== 'download') {
+      downloadSection.classList.add('hidden');
+      resetDownloadFlow();
+    }
+    if (activeKind !== 'search') {
+      searchSection.classList.add('hidden');
+      resetSearchFlow();
+    }
+  }
+
+  async function doOpenSearchPanel() {
+    switchFeaturePanel('search');
     searchSection.classList.remove('hidden');
 
     if (!state.bridgeReady) {

@@ -1,0 +1,77 @@
+:root {
+  /* Surface */
+  --wb-bg-canvas: #f2efe9;
+  --wb-bg-surface: #faf8f5;
+  --wb-bg-card: #ffffff;
+  --wb-bg-hover: #f7f5f2;
+  --wb-bg-subtle: #f4f1ed;
+
+  /* Text */
+  --wb-text-primary: #2d2a26;
+  --wb-text-secondary: #3f3a33;
+  --wb-text-tertiary: #6b6560;
+  --wb-text-muted: #8c8379;
+  --wb-text-on-accent: #ffffff;
+
+  /* Border */
+  --wb-border-default: #e8e4df;
+  --wb-border-strong: #e0dcd5;
+  --wb-border-focus: #b45309;
+
+  /* Accent */
+  --wb-accent: #b45309;
+  --wb-accent-hover: #92400e;
+  --wb-accent-active: #78350f;
+  --wb-accent-subtle: #fff7e6;
+
+  /* Semantic */
+  --wb-success-text: #2f7a3a;
+  --wb-success-bg: #ecf7e8;
+  --wb-success-border: #c6e9be;
+  --wb-warning-text: #92400e;
+  --wb-warning-bg: #fff7e6;
+  --wb-warning-border: #f9d9a1;
+  --wb-error-text: #991b1b;
+  --wb-error-bg: #fef2f2;
+  --wb-error-border: #fecaca;
+  --wb-info-text: #1e40af;
+  --wb-info-bg: #eff6ff;
+  --wb-info-border: #bfdbfe;
+
+  /* Typography */
+  --wb-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --wb-font-mono: "SF Mono", "Fira Code", ui-monospace, monospace;
+  --wb-font-size-xs: 10px;
+  --wb-font-size-sm: 11px;
+  --wb-font-size-base: 12px;
+  --wb-font-size-md: 13px;
+  --wb-line-height: 1.5;
+
+  /* Radius */
+  --wb-radius-sm: 8px;
+  --wb-radius-md: 10px;
+  --wb-radius-lg: 12px;
+  --wb-radius-xl: 14px;
+  --wb-radius-pill: 9999px;
+
+  /* Shadow */
+  --wb-shadow-container: 0 20px 50px rgba(63, 58, 51, 0.10), 0 2px 8px rgba(63, 58, 51, 0.04);
+  --wb-shadow-card: 0 1px 3px rgba(63, 58, 51, 0.03);
+  --wb-shadow-elevated: 0 4px 12px rgba(63, 58, 51, 0.08);
+
+  /* Spacing */
+  --wb-gap-xs: 6px;
+  --wb-gap-sm: 8px;
+  --wb-gap-md: 10px;
+  --wb-gap-lg: 12px;
+  --wb-gap-xl: 14px;
+  --wb-gap-2xl: 16px;
+  --wb-section-pad: 14px;
+
+  /* Motion */
+  --wb-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --wb-duration-fast: 0.08s;
+  --wb-duration-normal: 0.15s;
+  --wb-duration-slow: 0.25s;
+  --wb-duration-enter: 0.35s;
+}

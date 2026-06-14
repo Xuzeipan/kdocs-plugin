@@ -77,6 +77,7 @@ kdocs-plugin/
 │   ├── content-script.js      # Content Script — 脚本注入、消息桥接
 │   ├── page-bridge.js         # 页面注入脚本 — 暴露 WPSBatch API 给扩展
 │   ├── wps-batch-rename-download.js  # 核心逻辑 — 表格读取、附件解析、命名规则
+│   ├── theme.css              # 共享设计 token
 │   ├── popup.html / popup.js / popup.css     # Popup UI
 │   └── sidepanel.html / sidepanel.js / sidepanel.css  # Side Panel UI
 ├── icons/                     # 扩展图标
@@ -163,6 +164,8 @@ Browser APIs
 - 优化下载队列，600ms 间隔节流
 - 支持通过 `onDeterminingFilename` 强制覆盖下载文件名
 - 新增配置化命名模板和表头别名
+- 重设计 Popup 和 Side Panel UI：统一温暖办公助手风格，新增共享 `theme.css`，优化状态徽章、表格预览和按钮交互
+- Side Panel 功能按钮切换时自动隐藏并重置其他功能卡片
 
 ### v0.1.0
 - 初始版本：控制台脚本插件化
