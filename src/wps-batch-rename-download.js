@@ -3648,6 +3648,48 @@
   }
 
   /**
+   * KDocs/WPS 页面注入的 installHook.js 会在 setSelection/setActiveCell 等
+   * 操作内部校验 activeCell 是否在 selection 范围内，不一致时通过 throw /
+   * console.error 输出 "activeCell out of selection range!"。
+   * 这个校验常常只是开发 hook 的警告，不影响实际选区设置，因此调用敏感 API
+   * 时临时抑制该消息，避免污染 Console。
+   * @param {Function} fn
+   */
+  function suppressActiveCellWarningDuring(fn) {
+    var originalOnError = window.onerror;
+    var originalConsoleError = console.error;
+    var suppressed = false;
+
+    function shouldSuppress(arg) {
+      return arg && String(arg).indexOf("activeCell out of selection range") >= 0;
+    }
+
+    window.onerror = function (message, source, lineno, colno, error) {
+      if (shouldSuppress(message)) {
+        suppressed = true;
+        return true;
+      }
+      if (originalOnError) return originalOnError.apply(this, arguments);
+      return false;
+    };
+
+    console.error = function () {
+      if (shouldSuppress(arguments[0])) {
+        suppressed = true;
+        return;
+      }
+      return originalConsoleError.apply(console, arguments);
+    };
+
+    try {
+      return { result: fn(), suppressed: suppressed };
+    } finally {
+      window.onerror = originalOnError;
+      console.error = originalConsoleError;
+    }
+  }
+
+  /**
    * 通过 WPS UIL API 查询范围内的单元格值
    * @param {*} range
    * @param {*} options
@@ -4112,10 +4154,14 @@
     let selectionMethod = null;
     for (const [name, setter] of selectionSetters) {
       try {
-        const r = setter();
-        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2) });
+        // WPS hooks may throw / log "activeCell out of selection range!" even when
+        // the selection setter actually succeeds. Suppress that noise while keeping
+        // real failures visible.
+        const wrapped = suppressActiveCellWarningDuring(setter);
+        const r = wrapped.result;
+        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2), suppressedWarning: wrapped.suppressed });
         selectionMethod = name;
-        console.log("[selectWpsCell:SETTER_OK]", name, { result: summarizeObjectDeep(r, 2) });
+        console.log("[selectWpsCell:SETTER_OK]", name, { result: summarizeObjectDeep(r, 2), suppressedWarning: wrapped.suppressed });
         break;
       } catch (error) {
         var errMsg = String(error && error.message ? error.message : error).slice(0, 300);
@@ -4127,29 +4173,50 @@
       return { ok: false, range, view, tool, selectionLike, results, error: "所有 setSelection 方法都失败" };
     }
 
+    // Phase 2: 在单格选区已生效后，将 activeCell 也指向目标单元格。
+    // 部分 WPS 滚动 API 依赖 activeCell 而非 selection 来决定视口滚动位置；
+    // 同时如果旧 activeCell 位于新选区之外，setSelection 时 installHook.js
+    // 已经报过 "activeCell out of selection range!"（已被抑制）。这里在
+    // selection 已经指向目标后再设置 activeCell，坐标体系一致，通常不会
+    // 再触发警告；即使触发也继续抑制，保证滚动后续逻辑可用。
+    const activeCellSetters = [
+      ["view.setActiveCell(row,col)", () => view && view.setActiveCell && view.setActiveCell(rowIndex, colIndex)],
+      ["view.activateCell(row,col)", () => view && view.activateCell && view.activateCell(rowIndex, colIndex)],
+      ["view.setActiveCellRANGE(range)", () => view && view.setActiveCellRANGE && view.setActiveCellRANGE(range)],
+      ["sheet.setActiveCell(row,col)", () => sheet && sheet.setActiveCell && sheet.setActiveCell(rowIndex, colIndex)],
+      ["sheet.activateCell(row,col)", () => sheet && sheet.activateCell && sheet.activateCell(rowIndex, colIndex)],
+      ["tool.setActiveCell(row,col)", () => tool && tool.setActiveCell && tool.setActiveCell(rowIndex, colIndex)],
+    ];
+    let activeCellMethod = null;
+    for (const [name, setter] of activeCellSetters) {
+      try {
+        const wrapped = suppressActiveCellWarningDuring(setter);
+        const r = wrapped.result;
+        results.push({ name, ok: true, result: summarizeObjectDeep(r, 2), suppressedWarning: wrapped.suppressed });
+        activeCellMethod = name;
+        console.log("[selectWpsCell:ACTIVE_CELL_OK]", name, { result: summarizeObjectDeep(r, 2), suppressedWarning: wrapped.suppressed });
+        break;
+      } catch (error) {
+        const errMsg = String(error && error.message ? error.message : error).slice(0, 300);
+        results.push({ name, ok: false, error: errMsg });
+        console.log("[selectWpsCell:ACTIVE_CELL_FAIL]", name, errMsg);
+      }
+    }
+
     // ===== 诊断：变更后立刻读取 selection 快照，验证是否确实生效 =====
     var snapAfter = snapshotCurrentSelection();
     console.log("[selectWpsCell:AFTER]  selection snapshot:", snapAfter);
     console.log("[selectWpsCell:VERIFY]", {
       method: selectionMethod,
+      activeCellMethod: activeCellMethod,
       target: { rowIndex: rowIndex, colIndex: colIndex },
       before: snapBefore,
       after: snapAfter,
     });
 
-    // Phase 2 (activeCell) 已移除：
-    // 之前的 view.setActiveCell / view.activateCell / sheet.setActiveCell 调用
-    // 在某些 WPS 版本下会触发 "activeCell out of selection range!" 错误。
-    // 原因可能是：(a) range 内部结构与 WPS 预期不完全一致，导致 selection
-    // 实际未更新；(b) selection 更新异步但 activeCell 设置同步执行；
-    // (c) activeCell setter 使用了与 selection 不同的坐标校验路径。
-    //
-    // 当前方案：仅设置单格选区，WPS 会自行将 activeCell 指向该格。
-    // selection alone is enough for our scroll logic.
-
     return {
       ok: true,
-      method: selectionMethod + " (selection-only, no activeCell)",
+      method: selectionMethod + (activeCellMethod ? " + " + activeCellMethod : " (selection-only)"),
       range,
       view,
       tool,
@@ -8988,13 +9055,58 @@
       return null;
     }
 
-    // Find the WPS table's scrollable container. WPS draws the sheet onto a <canvas>
-    // wrapped in one or more divs with overflow:auto. Walk up from the canvas until we
-    // find a scrollable ancestor whose scrollHeight > clientHeight.
     /**
-     * 从 canvas 向上遍历 DOM 找到可滚动容器
+     * 获取 WPS 视图当前可见区域（用于计算滚轮/滚动条需要移动的距离）
+     * @param {*} view
+     */
+    function getVisibleRangeFromView(view) {
+      var candidates = [
+        function () { return view && view.getVisibleRange && view.getVisibleRange(); },
+        function () { return view && view.getViewport && view.getViewport(); },
+        function () { return view && view.getViewRange && view.getViewRange(); },
+        function () { return view && view.getVisibleCells && view.getVisibleCells(); },
+        function () { return view && view.getVisibleRect && view.getVisibleRect(); },
+        function () { return view && view.getFirstVisibleRow && view.getLastVisibleRow && { row: view.getFirstVisibleRow(), rowTo: view.getLastVisibleRow() }; },
+        function () { return view && view.getTopRow && view.getLeftCol && { row: view.getTopRow(), col: view.getLeftCol() }; },
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        try {
+          var r = candidates[i]();
+          if (r) return r;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    /**
+     * 查找 KDocs/WPS 表格相关的关键 DOM 元素
+     */
+    function findWpsGridElements() {
+      return {
+        grid: document.querySelector('#et_grid.et_grid_info, #et_grid, .et_grid_info'),
+        canvas: document.querySelector('canvas#et_canvas, canvas'),
+        gridWrap: document.querySelector('#et_grid_wrap'),
+        gridViewWrap: document.querySelector('.et-grid-view-wrap'),
+        divGrid: document.querySelector('#div_et_grid'),
+        scrollbarY: document.querySelector('#edit-scrollbar-y'),
+        scrollbarX: document.querySelector('#edit-scrollbar-x'),
+        nameBoxInput: document.querySelector('.name-box input.edit-box, .name-box .edit-box'),
+      };
+    }
+
+    // Find the WPS table's scrollable container. KDocs uses a custom virtual scroll
+    // engine with its own scrollbar widgets (#edit-scrollbar-y/x); native DOM
+    // scrollTop usually has no effect. We still locate the best candidate for DOM
+    // fallback and for anchoring the highlight overlay.
+    /**
+     * 从 canvas 向上遍历 DOM 找到可滚动容器（KDocs 优先）
      */
     function findCanvasScrollContainer() {
+      var els = findWpsGridElements();
+      if (els.grid) return { container: els.grid, canvas: els.canvas || els.grid.querySelector('canvas'), customScrollbars: true };
+      if (els.gridWrap) return { container: els.gridWrap, canvas: els.canvas, customScrollbars: true };
+      if (els.gridViewWrap) return { container: els.gridViewWrap, canvas: els.canvas, customScrollbars: false };
+
       var canvas = document.querySelector("canvas");
       if (!canvas) return null;
       var el = canvas.parentElement;
@@ -9004,7 +9116,7 @@
         var overflowX = (style.overflowX || "").toLowerCase();
         if ((overflowY === "auto" || overflowY === "scroll" || overflowX === "auto" || overflowX === "scroll")
             && el.scrollHeight > el.clientHeight) {
-          return { container: el, canvas: canvas };
+          return { container: el, canvas: canvas, customScrollbars: false };
         }
         el = el.parentElement;
       }
@@ -9013,7 +9125,7 @@
       while (el && el !== document.body) {
         var s2 = window.getComputedStyle(el);
         if ((s2.overflowY || "").match(/auto|scroll/) || (s2.overflowX || "").match(/auto|scroll/)) {
-          return { container: el, canvas: canvas };
+          return { container: el, canvas: canvas, customScrollbars: false };
         }
         el = el.parentElement;
       }
@@ -9051,10 +9163,153 @@
       return overlay;
     }
 
+    /**
+     * 安全设置输入框 value（尝试绕过 React/Vue 等框架的受控组件封装）
+     * @param {*} input
+     * @param {*} value
+     */
+    function setNativeInputValue(input, value) {
+      try {
+        var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        nativeSetter.call(input, value);
+      } catch (_) {
+        input.value = value;
+      }
+    }
+
+    /**
+     * 通过名称框（Name Box）输入地址并回车来触发 WPS 原生跳转/滚动
+     * @param {*} address
+     */
+    function navigateViaNameBox(address) {
+      var input = document.querySelector('.name-box input.edit-box, .name-box .edit-box, input.edit-box');
+      if (!input) return { ok: false, error: "未找到名称框输入框" };
+      var originalValue = input.value;
+      var originalFocus = document.activeElement;
+
+      try {
+        input.focus();
+        if (typeof input.select === "function") input.select();
+        setNativeInputValue(input, address);
+        input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+        var keyOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        input.dispatchEvent(new KeyboardEvent('keydown', keyOpts));
+        input.dispatchEvent(new KeyboardEvent('keypress', keyOpts));
+        input.dispatchEvent(new KeyboardEvent('keyup', keyOpts));
+
+        input.blur();
+        return { ok: true, method: 'name-box-enter', address: address };
+      } catch (err) {
+        return { ok: false, error: "名称框导航异常: " + String(err && err.message ? err.message : err) };
+      } finally {
+        try {
+          if (originalFocus && originalFocus.focus && document.activeElement !== originalFocus) {
+            originalFocus.focus();
+          }
+        } catch (_) {}
+      }
+    }
+
+    /**
+     * 在网格元素上派发 wheel 事件以触发 WPS 虚拟滚动
+     * @param {*} rowIndex
+     * @param {*} colIndex
+     * @param {*} view
+     */
+    function simulateWheelScroll(rowIndex, colIndex, view) {
+      var grid = document.querySelector('#et_grid, .et_grid_info, canvas#et_canvas, canvas');
+      if (!grid) return { ok: false, error: "未找到网格元素" };
+
+      var visible = getVisibleRangeFromView(view);
+      var currentRow = visible && (typeof visible.row === "number" ? visible.row : visible.topRow);
+      var currentCol = visible && (typeof visible.col === "number" ? visible.col : visible.leftCol);
+
+      var deltaRows = 0;
+      var deltaCols = 0;
+      if (typeof currentRow === "number") deltaRows = rowIndex - currentRow;
+      if (typeof currentCol === "number") deltaCols = colIndex - currentCol;
+
+      // If we cannot determine current visible cell, estimate from target position.
+      if (!Number.isFinite(deltaRows) && !Number.isFinite(deltaCols)) {
+        deltaRows = rowIndex;
+        deltaCols = colIndex;
+      }
+
+      var rowHeight = 22;
+      var colWidth = 80;
+      var deltaY = deltaRows * rowHeight * 3;
+      var deltaX = deltaCols * colWidth * 3;
+
+      // Clamp single event delta to avoid browser capping
+      var maxStep = 500;
+      var steps = Math.max(1, Math.ceil(Math.max(Math.abs(deltaY), Math.abs(deltaX)) / maxStep));
+      for (var i = 0; i < steps; i++) {
+        var dy = deltaY / steps;
+        var dx = deltaX / steps;
+        try {
+          grid.dispatchEvent(new WheelEvent('wheel', {
+            deltaX: dx,
+            deltaY: dy,
+            deltaZ: 0,
+            deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }));
+        } catch (err) {
+          // Fallback for environments where WheelEvent constructor is restricted
+          var legacy = document.createEvent('MouseEvents');
+          legacy.initEvent('wheel', true, true);
+          legacy.deltaX = dx;
+          legacy.deltaY = dy;
+          grid.dispatchEvent(legacy);
+        }
+      }
+
+      return { ok: true, method: 'wheel-simulation', deltaY: deltaY, deltaX: deltaX, steps: steps, fromVisible: visible };
+    }
+
+    /**
+     * 通过模拟自定义滚动条交互触发 WPS 滚动
+     * @param {*} rowIndex
+     * @param {*} colIndex
+     */
+    function simulateScrollbarScroll(rowIndex, colIndex) {
+      var els = findWpsGridElements();
+      var sbY = els.scrollbarY;
+      var sbX = els.scrollbarX;
+      if (!sbY && !sbX) return { ok: false, error: "未找到自定义滚动条" };
+
+      function clickTrack(track, ratio) {
+        if (!track) return false;
+        var rect = track.getBoundingClientRect();
+        var x = rect.left + rect.width * ratio;
+        var y = rect.top + rect.height * ratio;
+        ['mousedown', 'mouseup', 'click'].forEach(function (type) {
+          track.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+        });
+        return true;
+      }
+
+      // Very rough estimate: assume total rows = max(rowIndex*2+100, 1000)
+      var totalRows = Math.max(rowIndex * 2 + 100, 1000);
+      var totalCols = Math.max(colIndex * 2 + 10, 30);
+      var yRatio = Math.min(1, Math.max(0, rowIndex / totalRows));
+      var xRatio = Math.min(1, Math.max(0, colIndex / totalCols));
+
+      var yTrack = sbY && (sbY.querySelector('.scrollbar-track') || sbY);
+      var xTrack = sbX && (sbX.querySelector('.scrollbar-track') || sbX);
+      var clickedY = yTrack && clickTrack(yTrack, yRatio);
+      var clickedX = xTrack && clickTrack(xTrack, xRatio);
+
+      return { ok: clickedY || clickedX, method: 'scrollbar-click', yRatio: yRatio, xRatio: xRatio, clickedY: clickedY, clickedX: clickedX };
+    }
+
     // Smoothly scroll a cell into the viewport for canvas-rendered WPS tables.
-    // Strategy: get the cell's pixel rect from the WPS API, then scroll the canvas's
-    // scrollable container so the rect is in view. Falls back to estimated position
-    // (row * default height) if no WPS API method works.
+    // Uses WPS native APIs first, then falls back to Name Box navigation, wheel
+    // simulation, custom scrollbar simulation, and finally native DOM scroll.
     /**
      * 将单元格平滑滚动到视口并闪烁高亮
      * @param {*} rowIndex
@@ -9062,7 +9317,7 @@
      * @param {*} view
      * @param {*} sheet
      */
-    function scrollCellIntoView(rowIndex, colIndex, view, sheet) {
+    async function scrollCellIntoView(rowIndex, colIndex, view, sheet) {
       var rect = getCellPixelRect(rowIndex, colIndex, view, sheet);
       var scroller = findCanvasScrollContainer();
       if (!scroller) {
@@ -9080,6 +9335,106 @@
           method: "estimated",
         };
       }
+
+      var address = colIndexToLetters(colIndex) + (rowIndex + 1);
+
+      // Phase 1: WPS native scroll APIs. Canvas-based spreadsheets often use
+      // custom/virtual scrolling, so native DOM scrollTop has no effect. Try a
+      // broad set of method names because WPS has renamed these across versions.
+      var scrollApiCandidates = [
+        { name: "view.scrollTo", exists: function () { return view && typeof view.scrollTo === "function"; }, call: function () { return view.scrollTo(rowIndex, colIndex); } },
+        { name: "view.scrollRowIntoView", exists: function () { return view && typeof view.scrollRowIntoView === "function"; }, call: function () { return view.scrollRowIntoView(rowIndex); } },
+        { name: "view.scrollColumnIntoView", exists: function () { return view && typeof view.scrollColumnIntoView === "function"; }, call: function () { return view.scrollColumnIntoView(colIndex); } },
+        { name: "view.scrollRangeIntoView", exists: function () { return view && typeof view.scrollRangeIntoView === "function"; }, call: function () { return view.scrollRangeIntoView(rowIndex, colIndex, rowIndex, colIndex); } },
+        { name: "view.gotoCell", exists: function () { return view && typeof view.gotoCell === "function"; }, call: function () { return view.gotoCell(rowIndex, colIndex); } },
+        { name: "view.goToCell", exists: function () { return view && typeof view.goToCell === "function"; }, call: function () { return view.goToCell(rowIndex, colIndex); } },
+        { name: "view.showCell", exists: function () { return view && typeof view.showCell === "function"; }, call: function () { return view.showCell(rowIndex, colIndex); } },
+        { name: "view.showRange", exists: function () { return view && typeof view.showRange === "function"; }, call: function () { return view.showRange(rowIndex, colIndex, rowIndex, colIndex); } },
+        { name: "view.scrollToCell", exists: function () { return view && typeof view.scrollToCell === "function"; }, call: function () { return view.scrollToCell(rowIndex, colIndex); } },
+        { name: "view.scrollIntoView", exists: function () { return view && typeof view.scrollIntoView === "function"; }, call: function () { return view.scrollIntoView(rowIndex, colIndex); } },
+        { name: "view.setFirstVisibleRow", exists: function () { return view && typeof view.setFirstVisibleRow === "function"; }, call: function () { return view.setFirstVisibleRow(rowIndex); } },
+        { name: "view.setFirstVisibleColumn", exists: function () { return view && typeof view.setFirstVisibleColumn === "function"; }, call: function () { return view.setFirstVisibleColumn(colIndex); } },
+        { name: "sheet.scrollTo", exists: function () { return sheet && typeof sheet.scrollTo === "function"; }, call: function () { return sheet.scrollTo(rowIndex, colIndex); } },
+        { name: "sheet.scrollToCell", exists: function () { return sheet && typeof sheet.scrollToCell === "function"; }, call: function () { return sheet.scrollToCell(rowIndex, colIndex); } },
+        { name: "sheet.gotoCell", exists: function () { return sheet && typeof sheet.gotoCell === "function"; }, call: function () { return sheet.gotoCell(rowIndex, colIndex); } },
+        { name: "sheet.showCell", exists: function () { return sheet && typeof sheet.showCell === "function"; }, call: function () { return sheet.showCell(rowIndex, colIndex); } },
+      ];
+
+      for (var i = 0; i < scrollApiCandidates.length; i++) {
+        var candidate = scrollApiCandidates[i];
+        if (!candidate.exists()) continue;
+        try {
+          console.log("[scrollCellIntoView:TRY_WPS_API]", candidate.name);
+          var wrapped = suppressActiveCellWarningDuring(candidate.call);
+          var r = wrapped.result;
+          if (r && typeof r.then === "function") {
+            try {
+              await r;
+            } catch (asyncErr) {
+              if (!asyncErr || String(asyncErr.message || asyncErr).indexOf("activeCell out of selection range") < 0) {
+                throw asyncErr;
+              }
+              wrapped.suppressed = true;
+            }
+          }
+          // Refresh rect after WPS scroll because canvas coordinates may have shifted.
+          rect = getCellPixelRect(rowIndex, colIndex, view, sheet) || rect;
+          flashCellOverlay(rect, scroller.container);
+          console.log("[scrollCellIntoView:WPS_API_OK]", candidate.name, wrapped.suppressed ? "(suppressed activeCell warning)" : "");
+          return { ok: true, method: candidate.name, top: rect ? rect.top : null, suppressedWarning: wrapped.suppressed };
+        } catch (err) {
+          console.log("[scrollCellIntoView:WPS_API_FAIL]", candidate.name, err && err.message ? err.message : err);
+        }
+      }
+
+      // Phase 2: Name Box navigation — uses WPS's own goto behavior, very reliable.
+      console.log("[scrollCellIntoView:TRY_NAME_BOX]", address);
+      try {
+        var nbResult = navigateViaNameBox(address);
+        if (nbResult.ok) {
+          await sleep(80);
+          rect = getCellPixelRect(rowIndex, colIndex, view, sheet) || rect;
+          flashCellOverlay(rect, scroller.container);
+          console.log("[scrollCellIntoView:NAME_BOX_OK]", address);
+          return { ok: true, method: 'name-box', address: address, top: rect ? rect.top : null };
+        }
+        console.log("[scrollCellIntoView:NAME_BOX_FAIL]", nbResult.error);
+      } catch (err) {
+        console.log("[scrollCellIntoView:NAME_BOX_FAIL]", err && err.message ? err.message : err);
+      }
+
+      // Phase 3: wheel simulation on the grid/canvas element.
+      console.log("[scrollCellIntoView:TRY_WHEEL]");
+      try {
+        var wheelResult = simulateWheelScroll(rowIndex, colIndex, view);
+        if (wheelResult.ok) {
+          await sleep(80);
+          rect = getCellPixelRect(rowIndex, colIndex, view, sheet) || rect;
+          flashCellOverlay(rect, scroller.container);
+          console.log("[scrollCellIntoView:WHEEL_OK]", wheelResult);
+          return { ok: true, method: 'wheel-simulation', top: rect ? rect.top : null };
+        }
+      } catch (err) {
+        console.log("[scrollCellIntoView:WHEEL_FAIL]", err && err.message ? err.message : err);
+      }
+
+      // Phase 4: custom scrollbar simulation (KDocs-specific).
+      console.log("[scrollCellIntoView:TRY_SCROLLBAR]");
+      try {
+        var sbResult = simulateScrollbarScroll(rowIndex, colIndex);
+        if (sbResult.ok) {
+          await sleep(80);
+          rect = getCellPixelRect(rowIndex, colIndex, view, sheet) || rect;
+          flashCellOverlay(rect, scroller.container);
+          console.log("[scrollCellIntoView:SCROLLBAR_OK]", sbResult);
+          return { ok: true, method: 'scrollbar-simulation', top: rect ? rect.top : null };
+        }
+        console.log("[scrollCellIntoView:SCROLLBAR_FAIL]", sbResult.error);
+      } catch (err) {
+        console.log("[scrollCellIntoView:SCROLLBAR_FAIL]", err && err.message ? err.message : err);
+      }
+
+      // Phase 5: fallback to DOM scroll on the canvas scroll container.
       var targetTop = Math.max(0, rect.top - 100);
       try {
         scroller.container.scrollTo({ top: targetTop, behavior: "smooth" });
@@ -9088,14 +9443,14 @@
         scroller.container.scrollTop = targetTop;
       }
       flashCellOverlay(rect, scroller.container);
-      return { ok: true, method: rect.method || "unknown", top: rect.top };
+      return { ok: true, method: rect.method || "dom-fallback", top: rect.top, customScrollbars: scroller.customScrollbars };
     }
 
     /**
      * 按地址或行列索引跳转到指定单元格，选中、滚动到视口并高亮
      * @param {*} options
      */
-    kernel.jumpToCell = function (options) {
+    kernel.jumpToCell = async function (options) {
       options = options || {};
       console.log("[jumpToCell:START] options", options);
       var rowIndex = options.rowIndex;
@@ -9136,7 +9491,7 @@
 
       // Phase 2: 滚动到视口（不依赖 activeCell，仅使用 selection 结果）
       var sheet = window.APP && window.APP.getActiveSheet && window.APP.getActiveSheet();
-      var scrollResult = scrollCellIntoView(rowIndex, colIndex, selResult.view, sheet);
+      var scrollResult = await scrollCellIntoView(rowIndex, colIndex, selResult.view, sheet);
       console.log("[jumpToCell:SCROLL] ok=" + scrollResult.ok + " method=" + (scrollResult.method || "n/a"));
 
       return {
